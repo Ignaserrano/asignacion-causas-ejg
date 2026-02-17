@@ -50,9 +50,15 @@ function Badge({
   children: React.ReactNode;
   tone?: "neutral" | "ok";
 }) {
-  const cls = tone === "ok" ? "bg-green-100 border-green-300" : "bg-gray-100 border-gray-300";
+  const cls =
+    tone === "ok"
+      ? "bg-green-100 border-green-300 text-green-900 dark:bg-green-900/30 dark:border-green-700 dark:text-green-100"
+      : "bg-gray-100 border-gray-300 text-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100";
+
   return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}
+    >
       {children}
     </span>
   );
@@ -110,7 +116,8 @@ export default function CasesAllPage() {
     // filtros server-side (equality)
     if (filterStatus !== "all") qAny = query(qAny, where("status", "==", filterStatus));
     if (filterJur !== "all") qAny = query(qAny, where("jurisdiccion", "==", filterJur));
-    if (filterSpecialtyId !== "all") qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
+    if (filterSpecialtyId !== "all")
+      qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
     if (creatorUidFilter) qAny = query(qAny, where("broughtByUid", "==", creatorUidFilter));
 
     // orden
@@ -138,7 +145,8 @@ export default function CasesAllPage() {
 
     if (filterStatus !== "all") qAny = query(qAny, where("status", "==", filterStatus));
     if (filterJur !== "all") qAny = query(qAny, where("jurisdiccion", "==", filterJur));
-    if (filterSpecialtyId !== "all") qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
+    if (filterSpecialtyId !== "all")
+      qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
     if (creatorUidFilter) qAny = query(qAny, where("broughtByUid", "==", creatorUidFilter));
 
     qAny = query(qAny, orderBy("createdAt", "desc"));
@@ -153,7 +161,10 @@ export default function CasesAllPage() {
       const snap = await getDocs(qPage);
       count += snap.size;
       if (snap.size < 500) break;
-      cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<DocumentData, DocumentData>;
+      cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<
+        DocumentData,
+        DocumentData
+      >;
     }
 
     setTotal(count);
@@ -183,7 +194,7 @@ export default function CasesAllPage() {
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
-      // Pre-cargar emails
+      // Pre-cargar emails (solo para mostrar email, nunca UID en UI)
       const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
       const missingUids = uids.filter((u) => !emailByUid[u]);
       if (missingUids.length) {
@@ -193,9 +204,9 @@ export default function CasesAllPage() {
             try {
               const uSnap = await getDoc(doc(db, "users", uid));
               const email = uSnap.exists() ? String((uSnap.data() as any)?.email ?? "") : "";
-              newMap[uid] = email || uid;
+              newMap[uid] = email || "";
             } catch {
-              newMap[uid] = uid;
+              newMap[uid] = "";
             }
           })
         );
@@ -263,7 +274,12 @@ export default function CasesAllPage() {
       // opciones de especialidades (para filtro)
       try {
         const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
-        setSpecialtiesOptions(spSnap.docs.map((d) => ({ id: d.id, name: String((d.data() as any)?.name ?? d.id) })));
+        setSpecialtiesOptions(
+          spSnap.docs.map((d) => ({
+            id: d.id,
+            name: String((d.data() as any)?.name ?? d.id),
+          }))
+        );
       } catch {
         // ok
       }
@@ -319,7 +335,12 @@ export default function CasesAllPage() {
 
   const canNext = useMemo(() => pageRows.length === PAGE_SIZE, [pageRows.length]);
 
-  const creatorEmailShown = (uid: string) => emailByUid[uid] ?? uid;
+  // ✅ nunca UID: si no hay email todavía, mostramos "Cargando..."
+  const creatorEmailShown = (uid: string) => {
+    if (!uid) return "-";
+    const email = emailByUid[uid];
+    return email ? email : "Cargando...";
+  };
 
   async function nextPage() {
     if (!canNext || !lastDoc) return;
@@ -390,7 +411,7 @@ export default function CasesAllPage() {
     >
       {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-black/70">
+        <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{showingText.shown}</span> · Total{" "}
           <span className="font-bold">{total}</span>
           {total > 0 ? (
@@ -403,16 +424,15 @@ export default function CasesAllPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-       
           <Link
             href="/cases/mine"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
           >
             Mis causas →
           </Link>
           <Link
             href="/invites"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
           >
             Mis invitaciones →
           </Link>
@@ -420,15 +440,15 @@ export default function CasesAllPage() {
       </div>
 
       {/* Filtros / orden */}
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Estado{" "}
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as any)}
-                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="all">Todos</option>
                 <option value="draft">Pendiente</option>
@@ -436,12 +456,12 @@ export default function CasesAllPage() {
               </select>
             </label>
 
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Jurisdicción{" "}
               <select
                 value={filterJur}
                 onChange={(e) => setFilterJur(e.target.value)}
-                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="all">Todas</option>
                 <option value="nacional">Nacional</option>
@@ -451,12 +471,12 @@ export default function CasesAllPage() {
               </select>
             </label>
 
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Materia{" "}
               <select
                 value={filterSpecialtyId}
                 onChange={(e) => setFilterSpecialtyId(e.target.value)}
-                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="all">Todas</option>
                 {specialtiesOptions.map((s) => (
@@ -467,36 +487,36 @@ export default function CasesAllPage() {
               </select>
             </label>
 
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Creador (email exacto){" "}
               <input
                 value={filterCreatorEmail}
                 onChange={(e) => setFilterCreatorEmail(e.target.value)}
                 placeholder="ej: abogado@estudio.com"
-                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
               />
             </label>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Ordenar por{" "}
               <select
                 value={orderField}
                 onChange={(e) => setOrderField(e.target.value as any)}
-                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="createdAt">Fecha de creación</option>
                 <option value="caratulaTentativa">Carátula</option>
               </select>
             </label>
 
-            <label className="text-sm font-extrabold">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Dirección{" "}
               <select
                 value={orderDir}
                 onChange={(e) => setOrderDir(e.target.value as any)}
-                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="desc">Descendente</option>
                 <option value="asc">Ascendente</option>
@@ -505,7 +525,7 @@ export default function CasesAllPage() {
 
             <button
               onClick={resetFilters}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
             >
               Limpiar filtros
             </button>
@@ -514,31 +534,40 @@ export default function CasesAllPage() {
       </div>
 
       {loading ? (
-        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
       ) : null}
 
       {msg ? (
-        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          ⚠️ {msg}
+        </div>
       ) : null}
 
       {/* Listado */}
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
           {pageRows.length === 0 ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
               No hay causas con esos filtros.
             </div>
           ) : (
             pageRows.map((r) => (
-              <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div
+                key={r.id}
+                className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-[240px]">
-                    <div className="font-black">
+                    <div className="font-black text-gray-900 dark:text-gray-100">
                       {r.caratulaTentativa || "(sin carátula)"}{" "}
-                      <span className="text-xs font-normal text-black/60">(#{r.id})</span>
+                      <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+                        (#{r.id})
+                      </span>
                     </div>
 
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-black/70">
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
                       <span>
                         Materia:{" "}
                         <span className="font-bold">
@@ -565,7 +594,7 @@ export default function CasesAllPage() {
                 <div className="mt-4">
                   <Link
                     href={`/cases/${r.id}`}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                   >
                     Ver detalle →
                   </Link>
@@ -581,25 +610,25 @@ export default function CasesAllPage() {
         <button
           disabled={page <= 1}
           onClick={prevPage}
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
         >
           ← Anterior
         </button>
 
-        <div className="text-sm">
+        <div className="text-sm text-gray-800 dark:text-gray-100">
           Página <span className="font-black">{page}</span>
         </div>
 
         <button
           disabled={!canNext}
           onClick={nextPage}
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
         >
           Siguiente →
         </button>
       </div>
 
-      <div className="mt-3 text-xs text-black/60">
+      <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
         Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por ahora).
       </div>
     </AppShell>

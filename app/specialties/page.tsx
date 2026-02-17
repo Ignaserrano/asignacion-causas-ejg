@@ -1,17 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import {
-  collectionGroup,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-} from "firebase/firestore";
+import { collectionGroup, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
@@ -114,40 +106,42 @@ export default function MySpecialtiesPage() {
       onLogout={doLogout}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-black/70">
+        <div className="text-sm text-gray-700 dark:text-gray-200">
           Estas son las especialidades que tenés asignadas en tu perfil.
         </div>
-  
       </div>
 
       {msg ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ⚠️ {msg}
         </div>
       ) : null}
 
       {loading ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...
         </div>
       ) : list.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
           No tenés especialidades asignadas.
         </div>
       ) : (
         <div className="grid gap-3">
           {list.map((s) => (
-            <div key={s.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div
+              key={s.id}
+              className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+            >
               <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="font-black">{s.name}</div>
-                <div className="text-xs font-semibold text-black/60">{s.id}</div>
+                <div className="font-black text-gray-900 dark:text-gray-100">{s.name}</div>
+                <div className="text-xs font-semibold text-gray-600 dark:text-gray-400">{s.id}</div>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      <div className="mt-6 text-xs text-black/60">
+      <div className="mt-6 text-xs text-gray-600 dark:text-gray-400">
         (Más adelante podemos permitir edición si corresponde.)
       </div>
     </AppShell>

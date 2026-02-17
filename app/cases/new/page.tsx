@@ -33,7 +33,6 @@ export default function NewCasePage() {
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // auth guard
   const [authReady, setAuthReady] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
 
@@ -50,7 +49,6 @@ export default function NewCasePage() {
   const [broughtByParticipates, setBroughtByParticipates] = useState(true);
   const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>("auto");
 
-  // Direct assignment
   const [directAssignees, setDirectAssignees] = useState<string[]>([]);
   const [directJustification, setDirectJustification] = useState("");
 
@@ -72,7 +70,6 @@ export default function NewCasePage() {
       setUid(u.uid);
       setMsg(null);
 
-      // rol (para tabs admin)
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -81,7 +78,6 @@ export default function NewCasePage() {
         setRole("lawyer");
       }
 
-      // pending invites (badge tabs)
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -94,7 +90,6 @@ export default function NewCasePage() {
         setPendingInvites(0);
       }
 
-      // perfil (tu guard original)
       try {
         const profile = await getUserProfile(u.uid);
         if (!profile) {
@@ -123,7 +118,6 @@ export default function NewCasePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady]);
 
-  // Keep direct count consistent
   useEffect(() => {
     if (assignmentMode !== "direct") return;
     if (directAssignees.length > requiredDirectCount) {
@@ -199,52 +193,41 @@ export default function NewCasePage() {
 
   if (!authReady) {
     return (
-      <AppShell
-        title="Nueva causa"
-        userEmail={user?.email ?? null}
-        role={role}
-        pendingInvites={pendingInvites}
-        onLogout={doLogout}
-      >
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+      <AppShell title="Nueva causa" userEmail={user?.email ?? null} role={role} pendingInvites={pendingInvites} onLogout={doLogout}>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
       </AppShell>
     );
   }
 
+  const inputCls =
+    "w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400";
+
+  const selectCls =
+    "w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100";
+
+  const cardCls =
+    "rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900";
+
   return (
-    <AppShell
-      title="Nueva causa"
-      userEmail={user?.email ?? null}
-      role={role}
-      pendingInvites={pendingInvites}
-      onLogout={doLogout}
-    >
+    <AppShell title="Nueva causa" userEmail={user?.email ?? null} role={role} pendingInvites={pendingInvites} onLogout={doLogout}>
       <div className="mb-4">
-        <h1 className="text-xl font-black">Nueva causa</h1>
-        <div className="mt-1 text-sm text-black/60">
+        <h1 className="text-xl font-black text-gray-900 dark:text-gray-100">Nueva causa</h1>
+        <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">
           Completá los datos para crear la causa y, si corresponde, invitar/asignar abogados.
         </div>
       </div>
 
       <form onSubmit={handleSubmit} className="grid gap-4">
-        {/* Carátula */}
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold">Carátula tentativa</span>
-          <input
-            value={caratulaTentativa}
-            onChange={(e) => setCaratulaTentativa(e.target.value)}
-            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-          />
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Carátula tentativa</span>
+          <input value={caratulaTentativa} onChange={(e) => setCaratulaTentativa(e.target.value)} className={inputCls} />
         </label>
 
-        {/* Materia */}
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold">Materia (especialidad)</span>
-          <select
-            value={specialtyId}
-            onChange={(e) => setSpecialtyId(e.target.value)}
-            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
-          >
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Materia (especialidad)</span>
+          <select value={specialtyId} onChange={(e) => setSpecialtyId(e.target.value)} className={selectCls}>
             {specialties.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -253,34 +236,19 @@ export default function NewCasePage() {
           </select>
         </label>
 
-        {/* Objeto */}
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold">Objeto</span>
-          <textarea
-            value={objeto}
-            onChange={(e) => setObjeto(e.target.value)}
-            className="min-h-[96px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-          />
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Objeto</span>
+          <textarea value={objeto} onChange={(e) => setObjeto(e.target.value)} className={inputCls + " min-h-[96px]"} />
         </label>
 
-        {/* Resumen */}
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold">Resumen</span>
-          <textarea
-            value={resumen}
-            onChange={(e) => setResumen(e.target.value)}
-            className="min-h-[96px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-          />
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Resumen</span>
+          <textarea value={resumen} onChange={(e) => setResumen(e.target.value)} className={inputCls + " min-h-[96px]"} />
         </label>
 
-        {/* Jurisdicción */}
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold">Jurisdicción</span>
-          <select
-            value={jurisdiccion}
-            onChange={(e) => setJurisdiccion(e.target.value as Jurisdiccion)}
-            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
-          >
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Jurisdicción</span>
+          <select value={jurisdiccion} onChange={(e) => setJurisdiccion(e.target.value as Jurisdiccion)} className={selectCls}>
             <option value="nacional">Nacional</option>
             <option value="federal">Federal</option>
             <option value="caba">CABA</option>
@@ -288,99 +256,70 @@ export default function NewCasePage() {
           </select>
         </label>
 
-        {/* Participa */}
-        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm">
-          <input
-            type="checkbox"
-            checked={broughtByParticipates}
-            onChange={(e) => setBroughtByParticipates(e.target.checked)}
-            className="h-4 w-4"
-          />
-          <span className="font-extrabold">Voy a participar directamente en la causa</span>
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm dark:border-gray-800 dark:bg-gray-900">
+          <input type="checkbox" checked={broughtByParticipates} onChange={(e) => setBroughtByParticipates(e.target.checked)} className="h-4 w-4" />
+          <span className="font-extrabold text-gray-900 dark:text-gray-100">Voy a participar directamente en la causa</span>
         </label>
 
-        {/* Modo de asignación */}
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <div className="text-sm font-black">Modo de asignación</div>
+        <div className={cardCls}>
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">Modo de asignación</div>
 
           <div className="mt-3 grid gap-2">
-            <label className="flex items-center gap-3 text-sm">
-              <input
-                type="radio"
-                name="assignmentMode"
-                checked={assignmentMode === "auto"}
-                onChange={() => setAssignmentMode("auto")}
-                className="h-4 w-4"
-              />
+            <label className="flex items-center gap-3 text-sm text-gray-900 dark:text-gray-100">
+              <input type="radio" name="assignmentMode" checked={assignmentMode === "auto"} onChange={() => setAssignmentMode("auto")} className="h-4 w-4" />
               <span className="font-extrabold">Asignación automática</span>
-              <span className="text-black/60">(turno estricto)</span>
+              <span className="text-gray-600 dark:text-gray-400">(turno estricto)</span>
             </label>
 
-            <label className="flex items-center gap-3 text-sm">
-              <input
-                type="radio"
-                name="assignmentMode"
-                checked={assignmentMode === "direct"}
-                onChange={() => setAssignmentMode("direct")}
-                className="h-4 w-4"
-              />
+            <label className="flex items-center gap-3 text-sm text-gray-900 dark:text-gray-100">
+              <input type="radio" name="assignmentMode" checked={assignmentMode === "direct"} onChange={() => setAssignmentMode("direct")} className="h-4 w-4" />
               <span className="font-extrabold">Asignación directa</span>
-              <span className="text-black/60">(con justificación)</span>
+              <span className="text-gray-600 dark:text-gray-400">(con justificación)</span>
             </label>
           </div>
 
-          {assignmentMode === "direct" ? (
+          {assignmentMode === "direct" && (
             <div className="mt-4 grid gap-3">
-              <div className="text-sm text-black/70">
-                Elegí <span className="font-black">{requiredDirectCount}</span> abogado(s) (sin restricciones):
+              <div className="text-sm text-gray-700 dark:text-gray-300">
+                Elegí <span className="font-black">{requiredDirectCount}</span> abogado(s):
               </div>
 
-              <div className="max-h-[260px] overflow-auto rounded-xl border border-gray-200 p-3">
+              <div className="max-h-[260px] overflow-auto rounded-xl border border-gray-200 p-3 dark:border-gray-800">
                 {practicingUsers.map((u) => {
                   const checked = directAssigneesSet.has(u.uid);
                   const disabled = !checked && directAssignees.length >= requiredDirectCount;
 
                   return (
-                    <label key={u.uid} className="flex items-center gap-3 py-1 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleDirectAssignee(u.uid)}
-                        disabled={disabled}
-                        className="h-4 w-4 disabled:opacity-60"
-                      />
+                    <label key={u.uid} className="flex items-center gap-3 py-1 text-sm text-gray-900 dark:text-gray-100">
+                      <input type="checkbox" checked={checked} onChange={() => toggleDirectAssignee(u.uid)} disabled={disabled} className="h-4 w-4 disabled:opacity-60" />
                       <span className="font-semibold">{u.email}</span>
-                      <span className="text-black/50">({u.role})</span>
+                      <span className="text-gray-500 dark:text-gray-400">({u.role})</span>
                     </label>
                   );
                 })}
               </div>
 
               <label className="grid gap-2">
-                <span className="text-sm font-extrabold">Justificación (obligatoria)</span>
-                <textarea
-                  value={directJustification}
-                  onChange={(e) => setDirectJustification(e.target.value)}
-                  className="min-h-[88px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-                />
+                <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Justificación</span>
+                <textarea value={directJustification} onChange={(e) => setDirectJustification(e.target.value)} className={inputCls + " min-h-[88px]"} />
               </label>
 
-              <div className="text-xs text-black/60">
+              <div className="text-xs text-gray-600 dark:text-gray-400">
                 Recordatorio: mínimo 10 caracteres. Queda registrada en la invitación.
               </div>
             </div>
-          ) : null}
+          )}
         </div>
 
-        {msg ? (
-          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm font-bold">
+        {msg && (
+          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm font-bold text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
             {msg}
           </div>
-        ) : null}
+        )}
 
         <button
           disabled={saving}
-          className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60"
+          className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-extrabold text-gray-800 shadow-sm hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
         >
           {saving ? "Guardando..." : "Guardar causa"}
         </button>

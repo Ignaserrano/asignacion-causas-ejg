@@ -31,7 +31,10 @@ type UserRow = {
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-black">
+    <span
+      className="inline-flex items-center rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
+                 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+    >
       {children}
     </span>
   );
@@ -40,12 +43,10 @@ function Chip({ children }: { children: React.ReactNode }) {
 export default function AdminLawyersPage() {
   const router = useRouter();
 
-  // shell
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // page
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -63,20 +64,17 @@ export default function AdminLawyersPage() {
 
   const [users, setUsers] = useState<UserRow[]>([]);
 
-  // ---- create ----
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newIsPracticing, setNewIsPracticing] = useState(true);
   const [newSpecialties, setNewSpecialties] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
 
-  // ---- edit ----
   const [editingUid, setEditingUid] = useState<string | null>(null);
   const [editIsPracticing, setEditIsPracticing] = useState(true);
   const [editSpecialties, setEditSpecialties] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // ---- password modal ----
   const [pwUid, setPwUid] = useState<string | null>(null);
   const [pwEmail, setPwEmail] = useState<string>("");
   const [pwValue, setPwValue] = useState("");
@@ -97,7 +95,6 @@ export default function AdminLawyersPage() {
     setMsg(null);
 
     try {
-      // specialties
       const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
       const spList: Specialty[] = spSnap.docs.map((d) => ({
         id: d.id,
@@ -106,13 +103,12 @@ export default function AdminLawyersPage() {
       }));
       setSpecialties(spList);
 
-      // perfiles en Firestore
       const uSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
 
       const profileRows: UserRow[] = uSnap.docs.map((d) => {
         const data = d.data() as any;
         const roleRaw = String(data?.role ?? "lawyer");
-        const role = roleRaw === "abogado" ? "lawyer" : roleRaw; // compat viejo
+        const role = roleRaw === "abogado" ? "lawyer" : roleRaw;
 
         return {
           uid: d.id,
@@ -125,7 +121,6 @@ export default function AdminLawyersPage() {
 
       const profileByUid = new Map(profileRows.map((r) => [r.uid, r]));
 
-      // usuarios de Auth (para incluir sin perfil)
       const listFn = httpsCallable(functions, "adminListAuthUsers");
       const authRes = (await listFn({})) as any;
       const authUsers: Array<{ uid: string; email: string }> = authRes?.data?.users ?? [];
@@ -149,7 +144,6 @@ export default function AdminLawyersPage() {
       }
 
       merged.sort((a, b) => a.email.localeCompare(b.email));
-
       const finalRows = merged.filter((r) => r.role === "lawyer" || r.role === "admin");
       setUsers(finalRows);
     } catch (e: any) {
@@ -168,7 +162,6 @@ export default function AdminLawyersPage() {
 
       setUser(u);
 
-      // rol
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -177,7 +170,6 @@ export default function AdminLawyersPage() {
         setRole("lawyer");
       }
 
-      // pending invites (badge tabs)
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -195,7 +187,6 @@ export default function AdminLawyersPage() {
     });
 
     return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   async function doLogout() {
@@ -315,48 +306,43 @@ export default function AdminLawyersPage() {
       pendingInvites={pendingInvites}
       onLogout={doLogout}
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-black/70">
-          Gestión de usuarios (Auth + perfiles en Firestore).
-        </div>
-
+      <div className="mb-4 text-sm text-gray-700 dark:text-gray-200">
+        Gestión de usuarios (Auth + perfiles en Firestore).
       </div>
 
       {msg ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          ⚠️ {msg}
+        </div>
       ) : null}
 
       {loading ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
       ) : null}
 
       {/* CREAR */}
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="text-sm font-black">Agregar nuevo abogado</div>
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="text-sm font-black text-gray-900 dark:text-gray-100">Agregar nuevo abogado</div>
 
         <div className="mt-3 flex flex-wrap items-end gap-3">
-          <label className="grid gap-2">
-            <span className="text-sm font-extrabold">Email</span>
-            <input
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              placeholder="abogado@estudio.com"
-              className="min-w-[260px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-            />
-          </label>
+          <input
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            placeholder="abogado@estudio.com"
+            className="min-w-[260px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          />
 
-          <label className="grid gap-2">
-            <span className="text-sm font-extrabold">Password</span>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="mín. 6 caracteres"
-              className="min-w-[220px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-            />
-          </label>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="mín. 6 caracteres"
+            className="min-w-[220px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          />
 
-          <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold">
+          <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
             <input
               type="checkbox"
               checked={newIsPracticing}
@@ -369,40 +355,26 @@ export default function AdminLawyersPage() {
           <button
             disabled={creating}
             onClick={createLawyer}
-            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60"
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60
+                       dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
           >
             {creating ? "Creando..." : "Crear abogado"}
           </button>
         </div>
-
-        <div className="mt-4">
-          <div className="mb-2 text-sm font-black">Especialidades</div>
-          <div className="flex flex-wrap gap-3">
-            {activeSpecialties.map((s) => (
-              <label key={s.id} className="inline-flex items-center gap-2 text-sm font-semibold">
-                <input
-                  type="checkbox"
-                  checked={newSpecialties.includes(s.id)}
-                  onChange={() => setNewSpecialties((prev) => toggle(prev, s.id))}
-                  className="h-4 w-4"
-                />
-                {s.name}
-              </label>
-            ))}
-          </div>
-        </div>
       </div>
 
       {/* LISTADO */}
-      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 p-4">
-          <div className="text-sm font-black">Abogados existentes ({users.length})</div>
+      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="border-b border-gray-200 p-4 dark:border-gray-800">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Abogados existentes ({users.length})
+          </div>
         </div>
 
         {users.length === 0 ? (
-          <div className="p-4 text-sm text-black/70">No hay abogados.</div>
+          <div className="p-4 text-sm text-gray-700 dark:text-gray-200">No hay abogados.</div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-100 dark:divide-gray-800">
             {users.map((r) => {
               const isEditing = editingUid === r.uid;
 
@@ -410,9 +382,9 @@ export default function AdminLawyersPage() {
                 <div key={r.uid} className="p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-[260px]">
-                      <div className="font-black">
+                      <div className="font-black text-gray-900 dark:text-gray-100">
                         {r.email}{" "}
-                        <span className="text-xs font-normal text-black/60">
+                        <span className="text-xs font-normal text-gray-600 dark:text-gray-400">
                           ({r.role === "admin" ? "admin" : "abogado"})
                         </span>
                       </div>
@@ -426,84 +398,29 @@ export default function AdminLawyersPage() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => startEdit(r)}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                                   dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                       >
                         Editar
                       </button>
 
                       <button
                         onClick={() => openPassword(r.uid, r.email)}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                                   dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                       >
                         Cambiar password
                       </button>
 
                       <button
                         onClick={() => deleteLawyer(r.uid, r.email)}
-                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                                   dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                       >
                         Eliminar
                       </button>
                     </div>
                   </div>
-
-                  {!isEditing ? (
-                    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-                      <span className="font-extrabold text-black/70">Especialidades:</span>
-                      {r.specialties.length === 0 ? (
-                        <span className="text-black/60">(sin especialidades)</span>
-                      ) : (
-                        r.specialties.map((sid) => (
-                          <Chip key={sid}>{specialtyNameById[sid] ?? sid}</Chip>
-                        ))
-                      )}
-                    </div>
-                  ) : (
-                    <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold">
-                          <input
-                            type="checkbox"
-                            checked={editIsPracticing}
-                            onChange={(e) => setEditIsPracticing(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          Practicante
-                        </label>
-
-                        <button
-                          disabled={savingEdit}
-                          onClick={saveEdit}
-                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
-                        >
-                          {savingEdit ? "Guardando..." : "Guardar"}
-                        </button>
-
-                        <button
-                          disabled={savingEdit}
-                          onClick={() => setEditingUid(null)}
-                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-
-                      <div className="mt-4 text-sm font-black">Especialidades</div>
-                      <div className="mt-2 flex flex-wrap gap-3">
-                        {activeSpecialties.map((s) => (
-                          <label key={s.id} className="inline-flex items-center gap-2 text-sm font-semibold">
-                            <input
-                              type="checkbox"
-                              checked={editSpecialties.includes(s.id)}
-                              onChange={() => setEditSpecialties((prev) => toggle(prev, s.id))}
-                              className="h-4 w-4"
-                            />
-                            {s.name}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -513,26 +430,26 @@ export default function AdminLawyersPage() {
 
       {/* MODAL PASSWORD */}
       {pwUid ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-4 shadow-lg">
-            <div className="text-sm font-black">Cambiar password — {pwEmail}</div>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-4 shadow-lg dark:border-gray-800 dark:bg-gray-900">
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Cambiar password — {pwEmail}
+            </div>
 
-            <label className="mt-3 grid gap-2">
-              <span className="text-sm font-extrabold">Nueva password</span>
-              <input
-                type="password"
-                value={pwValue}
-                onChange={(e) => setPwValue(e.target.value)}
-                placeholder="mín. 6 caracteres"
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
-              />
-            </label>
+            <input
+              type="password"
+              value={pwValue}
+              onChange={(e) => setPwValue(e.target.value)}
+              placeholder="mín. 6 caracteres"
+              className="mt-3 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            />
 
             <div className="mt-4 flex justify-end gap-2">
               <button
                 disabled={savingPw}
                 onClick={() => setPwUid(null)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
               >
                 Cancelar
               </button>
@@ -540,13 +457,16 @@ export default function AdminLawyersPage() {
               <button
                 disabled={savingPw}
                 onClick={savePassword}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
               >
                 {savingPw ? "Guardando..." : "Guardar password"}
               </button>
             </div>
 
-            <div className="mt-2 text-xs text-black/60">Nota: la contraseña se cambia en Firebase Auth.</div>
+            <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+              Nota: la contraseña se cambia en Firebase Auth.
+            </div>
           </div>
         </div>
       ) : null}

@@ -45,9 +45,15 @@ function Badge({
   children: React.ReactNode;
   tone?: "neutral" | "ok";
 }) {
-  const cls = tone === "ok" ? "bg-green-100 border-green-300" : "bg-gray-100 border-gray-300";
+  const cls =
+    tone === "ok"
+      ? "bg-green-100 border-green-300 text-green-900 dark:bg-green-900/30 dark:border-green-700 dark:text-green-100"
+      : "bg-gray-100 border-gray-300 text-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100";
+
   return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}
+    >
       {children}
     </span>
   );
@@ -222,16 +228,15 @@ export default function MyCasesPage() {
     >
       {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-black/70">
+        <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{filtered.length}</span> de{" "}
           <span className="font-bold">{rows.length}</span>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          
           <Link
             href="/cases"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
           >
             Ver todas →
           </Link>
@@ -240,12 +245,12 @@ export default function MyCasesPage() {
 
       {/* Filtros */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <label className="text-sm font-extrabold">
+        <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
           Estado{" "}
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value as any)}
-            className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+            className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
           >
             <option value="all">Todos</option>
             <option value="draft">Draft</option>
@@ -257,7 +262,7 @@ export default function MyCasesPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar por carátula…"
-          className="min-w-[240px] flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+          className="min-w-[240px] flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
         />
 
         <button
@@ -265,24 +270,28 @@ export default function MyCasesPage() {
             setFilterStatus("all");
             setSearch("");
           }}
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
         >
           Limpiar
         </button>
       </div>
 
       {loading ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
       ) : null}
 
       {msg ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          ⚠️ {msg}
+        </div>
       ) : null}
 
       {!loading && !msg ? (
         <div className="grid gap-3">
           {filtered.length === 0 ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
               No tenés causas aún (o no coinciden con el filtro).
             </div>
           ) : (
@@ -292,26 +301,34 @@ export default function MyCasesPage() {
               const missing = Math.max(0, required - confirmed);
 
               return (
-                <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div
+                  key={r.id}
+                  className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+                >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-[240px]">
-                      <Link href={`/cases/${r.id}`} className="font-black hover:underline">
+                      <Link
+                        href={`/cases/${r.id}`}
+                        className="font-black text-gray-900 hover:underline dark:text-gray-100"
+                      >
                         {r.caratulaTentativa || "(sin carátula)"}
                       </Link>
 
-                      <div className="mt-1 text-sm text-black/70">
+                      <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
                         Materia:{" "}
                         <span className="font-bold">
                           {specialtyNameById[r.specialtyId] ?? r.specialtyId}
                         </span>{" "}
                         · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
-                        <span className="font-bold">{formatDateFromSeconds(r.createdAt?.seconds)}</span>
+                        <span className="font-bold">
+                          {formatDateFromSeconds(r.createdAt?.seconds)}
+                        </span>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
                       {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>DRAFT</Badge>}
-                      <span className="text-xs font-semibold text-black/70">
+                      <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
                         {missing > 0
                           ? `faltan ${missing} (${confirmed}/${required})`
                           : `completo (${confirmed}/${required})`}
@@ -322,7 +339,7 @@ export default function MyCasesPage() {
                   <div className="mt-4">
                     <Link
                       href={`/cases/${r.id}`}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                     >
                       Ver detalle →
                     </Link>

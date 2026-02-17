@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
@@ -32,7 +31,10 @@ type Specialty = {
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-black">
+    <span
+      className="inline-flex items-center rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
+                 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+    >
       {children}
     </span>
   );
@@ -168,11 +170,13 @@ export default function AdminSpecialtiesPage() {
     return { active, inactive };
   }, [items]);
 
-  // gate visual
+  // gate visual (IMPORTANTE: también dark)
   if (!user || !roleChecked) {
     return (
       <main className="mx-auto max-w-3xl p-4">
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
       </main>
     );
   }
@@ -186,35 +190,37 @@ export default function AdminSpecialtiesPage() {
       onLogout={doLogout}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-black/70">
+        <div className="text-sm text-gray-700 dark:text-gray-200">
           <span className="font-black">Especialidades</span> disponibles para asignación.
         </div>
-
-
       </div>
 
       {msg ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          ⚠️ {msg}
+        </div>
       ) : null}
 
       {/* Agregar */}
-      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="text-sm font-black">Agregar especialidad</div>
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="text-sm font-black text-gray-900 dark:text-gray-100">Agregar especialidad</div>
 
         <form onSubmit={handleAdd} className="mt-3 flex flex-wrap items-end gap-2">
           <label className="grid flex-1 gap-2">
-            <span className="text-sm font-extrabold">Nombre</span>
+            <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Nombre</span>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Ej: Derecho de Familia"
-              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900
+                         dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             />
           </label>
 
           <button
             disabled={saving}
-            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60"
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60
+                       dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
           >
             {saving ? "Guardando..." : "Agregar"}
           </button>
@@ -228,20 +234,20 @@ export default function AdminSpecialtiesPage() {
       </div>
 
       {/* Listado */}
-      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 p-4">
-          <div className="text-sm font-black">Listado</div>
+      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="border-b border-gray-200 p-4 dark:border-gray-800">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">Listado</div>
         </div>
 
         {items.length === 0 ? (
-          <div className="p-4 text-sm text-black/70">No hay especialidades cargadas.</div>
+          <div className="p-4 text-sm text-gray-700 dark:text-gray-200">No hay especialidades cargadas.</div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-100 dark:divide-gray-800">
             {items.map((it) => (
               <div key={it.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="min-w-[240px]">
-                  <div className="font-black">{it.name}</div>
-                  <div className="mt-1 text-xs text-black/60">{it.id}</div>
+                  <div className="font-black text-gray-900 dark:text-gray-100">{it.name}</div>
+                  <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">{it.id}</div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -249,7 +255,8 @@ export default function AdminSpecialtiesPage() {
 
                   <button
                     onClick={() => toggleActive(it)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                               dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                   >
                     {it.active ? "Desactivar" : "Activar"}
                   </button>

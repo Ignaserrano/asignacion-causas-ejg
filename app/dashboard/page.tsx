@@ -36,18 +36,29 @@ function CardLink({
   return (
     <a
       href={href}
-      className="group rounded-xl border border-gray-300 bg-white p-4 shadow-sm transition hover:shadow-md"
+      className="group rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:shadow-md
+                 dark:border-gray-800 dark:bg-gray-900"
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="text-base font-black">{title}</div>
+        <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+
         {tag ? (
-          <span className="rounded-full border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-black">
+          <span
+            className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
+                       dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          >
             {tag}
           </span>
         ) : null}
       </div>
-      {subtitle ? <div className="mt-1 text-sm text-black/70">{subtitle}</div> : null}
-      <div className="mt-3 text-sm font-extrabold text-black/70 group-hover:text-black">Abrir →</div>
+
+      {subtitle ? (
+        <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">{subtitle}</div>
+      ) : null}
+
+      <div className="mt-3 text-sm font-extrabold text-gray-600 group-hover:text-gray-900 dark:text-gray-300 dark:group-hover:text-gray-100">
+        Abrir →
+      </div>
     </a>
   );
 }
@@ -111,18 +122,18 @@ export default function DashboardPage() {
       onLogout={doLogout}
     >
       {msg ? (
-        <div className="mb-4 rounded-xl border border-gray-300 bg-white p-3 text-sm">
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ⚠️ {msg}
         </div>
       ) : null}
 
       {loading ? (
-        <div className="mb-4 rounded-xl border border-gray-300 bg-white p-3 text-sm">
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...
         </div>
       ) : null}
 
-      <div className="text-sm font-black">Trabajo</div>
+      <div className="text-sm font-black text-gray-900 dark:text-gray-100">Trabajo</div>
       <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
         <CardLink href="/cases/mine" title="Mis causas" subtitle="Causas donde participo o que creé" />
         <CardLink
@@ -137,7 +148,7 @@ export default function DashboardPage() {
 
       {isAdmin ? (
         <>
-          <div className="mt-8 text-sm font-black">Administración</div>
+          <div className="mt-8 text-sm font-black text-gray-900 dark:text-gray-100">Administración</div>
           <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
             <CardLink
               href="/admin/lawyers"
@@ -152,19 +163,16 @@ export default function DashboardPage() {
               tag="ADMIN"
             />
 
-
-
-             {role === "admin" && (
-  <button
-    onClick={exportExcel}
-    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50"
-  >
-    Exportar Excel de causas
-  </button>
-)}
+            {role === "admin" && (
+              <button
+                onClick={exportExcel}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-left text-sm font-extrabold shadow-sm hover:bg-gray-50
+                           dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
+              >
+                Exportar Excel de causas
+              </button>
+            )}
           </div>
-
-          
         </>
       ) : null}
     </AppShell>

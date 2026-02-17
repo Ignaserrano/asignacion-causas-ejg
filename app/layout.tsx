@@ -23,10 +23,24 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es">
- <body
-  className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100`}
->
+<html lang="es" suppressHydrationWarning>
+  <head>
+    <script
+      dangerouslySetInnerHTML={{
+        __html: `
+          (function () {
+            try {
+              var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+              var root = document.documentElement;
+              if (isDark) root.classList.add('dark');
+              else root.classList.remove('dark');
+            } catch (e) {}
+          })();
+        `,
+      }}
+    />
+  </head>
+  <body className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100`}>
   {children}
 </body>
     </html>
