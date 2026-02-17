@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   collection,
   doc,
@@ -15,10 +16,13 @@ import {
   where,
   DocumentSnapshot,
   Query,
+  collectionGroup,
 } from "firebase/firestore";
 
-import { auth, db } from "@/lib/firebase";
 import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
+
+import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
 type CaseStatus = "draft" | "assigned";
 
@@ -32,9 +36,6 @@ type CaseRow = {
   broughtByUid: string;
 };
 
-type SpecialtyDoc = { name?: string; active?: boolean };
-type UserDoc = { email?: string };
-
 const PAGE_SIZE = 25;
 
 function formatDateFromSeconds(seconds?: number) {
@@ -42,20 +43,17 @@ function formatDateFromSeconds(seconds?: number) {
   return new Date(seconds * 1000).toLocaleString();
 }
 
-function pill(text: string, bg = "#f8f9fa") {
+function Badge({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "ok";
+}) {
+  const cls = tone === "ok" ? "bg-green-100 border-green-300" : "bg-gray-100 border-gray-300";
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 999,
-        border: "1px solid #ddd",
-        fontSize: 12,
-        fontWeight: 900,
-        background: bg,
-      }}
-    >
-      {text}
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+      {children}
     </span>
   );
 }
@@ -67,6 +65,12 @@ function safeLower(s: any) {
 export default function CasesAllPage() {
   const router = useRouter();
 
+  // shell
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // page state
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -129,8 +133,7 @@ export default function CasesAllPage() {
   }
 
   async function refreshTotalCount() {
-    // Sin aggregation count() por compatibilidad; hacemos un scan por páginas.
-    // (Funciona bien para volúmenes chicos/medios. Si crece mucho, lo pasamos a Cloud Function + count.)
+    // Sin aggregation count() por compatibilidad; scan por páginas.
     let qAny: any = collection(db, "cases");
 
     if (filterStatus !== "all") qAny = query(qAny, where("status", "==", filterStatus));
@@ -138,21 +141,19 @@ export default function CasesAllPage() {
     if (filterSpecialtyId !== "all") qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
     if (creatorUidFilter) qAny = query(qAny, where("broughtByUid", "==", creatorUidFilter));
 
-    // Para contar, no importa orden, pero Firestore lo requiere si luego paginás; igual lo dejamos consistente
     qAny = query(qAny, orderBy("createdAt", "desc"));
 
     let count = 0;
-   let cursor: QueryDocumentSnapshot<DocumentData, DocumentData> | null = null;
+    let cursor: QueryDocumentSnapshot<DocumentData, DocumentData> | null = null;
 
-    // page scan 500 max por seguridad (evitar loops infinitos)
     for (let i = 0; i < 500; i++) {
       let qPage: any = qAny;
       if (cursor) qPage = query(qPage, startAfter(cursor));
-      qPage = query(qPage, limit(500)); // chunk grande para contar más rápido
+      qPage = query(qPage, limit(500));
       const snap = await getDocs(qPage);
       count += snap.size;
       if (snap.size < 500) break;
-cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<DocumentData, DocumentData>;
+      cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<DocumentData, DocumentData>;
     }
 
     setTotal(count);
@@ -182,10 +183,9 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
-      // Pre-cargar emails del creador de esta página
+      // Pre-cargar emails
       const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
       const missingUids = uids.filter((u) => !emailByUid[u]);
-
       if (missingUids.length) {
         const newMap = { ...emailByUid };
         await Promise.all(
@@ -202,17 +202,18 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
         setEmailByUid(newMap);
       }
 
-      // Pre-cargar especialidades de esta página
+      // Pre-cargar especialidades
       const spIds = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
       const missingSp = spIds.filter((id) => !specialtyNameById[id]);
-
       if (missingSp.length) {
         const spMap = { ...specialtyNameById };
         await Promise.all(
           missingSp.map(async (id) => {
             try {
               const spSnap = await getDoc(doc(db, "specialties", id));
-              spMap[id] = spSnap.exists() ? String((spSnap.data() as any)?.name ?? "(sin nombre)") : "(no encontrada)";
+              spMap[id] = spSnap.exists()
+                ? String((spSnap.data() as any)?.name ?? "(sin nombre)")
+                : "(no encontrada)";
             } catch {
               spMap[id] = "(error)";
             }
@@ -227,7 +228,7 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
     }
   }
 
-  // ------------ init auth + load specialties options ------------
+  // ------------ init auth + load specialties options + first load ------------
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -235,12 +236,34 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
         return;
       }
 
+      setUser(u);
+
+      // rol
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
+      }
+
+      // pending invites
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
+
       // opciones de especialidades (para filtro)
       try {
         const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
-        setSpecialtiesOptions(
-          spSnap.docs.map((d) => ({ id: d.id, name: String((d.data() as any)?.name ?? d.id) }))
-        );
+        setSpecialtiesOptions(spSnap.docs.map((d) => ({ id: d.id, name: String((d.data() as any)?.name ?? d.id) })));
       } catch {
         // ok
       }
@@ -257,10 +280,9 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // ------------ when filters/order change: reset pagination ------------
+  // ------------ when creator email changes: resolve uid ------------
   useEffect(() => {
     (async () => {
-      // Si el filtro por creador es email, resolvemos uid exacto
       const email = safeLower(filterCreatorEmail);
       if (!email) {
         setCreatorUidFilter(null);
@@ -276,8 +298,8 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCreatorEmail]);
 
+  // ------------ when filters/order change: reset pagination & reload ------------
   useEffect(() => {
-    // Re-cargar cuando cambian filtros/orden (incluye creatorUidFilter)
     (async () => {
       setPage(1);
       setPrevStack([]);
@@ -295,10 +317,7 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
     return { shown, start, end };
   }, [pageRows.length, page, total]);
 
-  const canNext = useMemo(() => {
-    // si mostramos menos de PAGE_SIZE, no hay próxima
-    return pageRows.length === PAGE_SIZE;
-  }, [pageRows.length]);
+  const canNext = useMemo(() => pageRows.length === PAGE_SIZE, [pageRows.length]);
 
   const creatorEmailShown = (uid: string) => emailByUid[uid] ?? uid;
 
@@ -311,21 +330,19 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
 
   async function prevPage() {
     if (page <= 1) return;
-    // Para volver: rehacemos la query desde el principio hasta el cursor anterior (stack)
+
     const newStack = [...prevStack];
-    newStack.pop(); // quitamos la actual
+    newStack.pop();
     const prevCursor = newStack.length ? newStack[newStack.length - 1] : null;
 
     setPrevStack(newStack);
     setPage((p) => Math.max(1, p - 1));
     setLastDoc(prevCursor);
 
-    // recargar desde el cursor anterior real
     setLoading(true);
     setMsg(null);
+
     try {
-      // para “prev” reconstruimos desde cursor anterior:
-      // si prevCursor es null => page 1
       const qCases = buildCasesQuery(undefined, prevCursor);
       const snap = await getDocs(qCases);
 
@@ -361,242 +378,235 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
   }
 
   return (
-    <main style={{ maxWidth: 1100, margin: "40px auto", padding: 16 }}>
-      {/* Nav / flujo */}
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Todas las causas</h1>
-
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <a href="/dashboard" style={{ textDecoration: "none", fontWeight: 800 }}>
-            Inicio →
-          </a>
-          <a href="/cases/new" style={{ textDecoration: "none", fontWeight: 800 }}>
-            + Nueva causa
-          </a>
-          <a href="/cases/mine" style={{ textDecoration: "none", fontWeight: 800 }}>
-            Mis causas →
-          </a>
-          <a href="/invites" style={{ textDecoration: "none", fontWeight: 800 }}>
-            Mis invitaciones →
-          </a>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 10, opacity: 0.85, fontSize: 13 }}>
-        Mostrando <b>{showingText.shown}</b> en esta página · Total: <b>{total}</b>{" "}
-        {total > 0 ? (
-          <span>
-            · Rango: <b>{showingText.start}</b>–<b>{showingText.end}</b>
-          </span>
-        ) : null}
-      </div>
-
-      {/* filtros / orden */}
-      <div
-        style={{
-          marginTop: 12,
-          border: "1px solid #ddd",
-          padding: 12,
-          display: "grid",
-          gap: 10,
-        }}
-      >
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ fontSize: 13 }}>
-            Estado:{" "}
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value as any)}
-              style={{ padding: 6, border: "1px solid #ddd" }}
-            >
-              <option value="all">Todos</option>
-              <option value="draft">Pendiente</option>
-              <option value="assigned">Asignada</option>
-            </select>
-          </label>
-
-          <label style={{ fontSize: 13 }}>
-            Jurisdicción:{" "}
-            <select
-              value={filterJur}
-              onChange={(e) => setFilterJur(e.target.value)}
-              style={{ padding: 6, border: "1px solid #ddd" }}
-            >
-              <option value="all">Todas</option>
-              <option value="nacional">Nacional</option>
-              <option value="federal">Federal</option>
-              <option value="caba">CABA</option>
-              <option value="provincia_bs_as">Provincia Bs. As.</option>
-            </select>
-          </label>
-
-          <label style={{ fontSize: 13 }}>
-            Materia:{" "}
-            <select
-              value={filterSpecialtyId}
-              onChange={(e) => setFilterSpecialtyId(e.target.value)}
-              style={{ padding: 6, border: "1px solid #ddd", minWidth: 240 }}
-            >
-              <option value="all">Todas</option>
-              {specialtiesOptions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label style={{ fontSize: 13 }}>
-            Creador (email exacto):{" "}
-            <input
-              value={filterCreatorEmail}
-              onChange={(e) => setFilterCreatorEmail(e.target.value)}
-              placeholder="ej: abogado@estudio.com"
-              style={{ padding: 7, border: "1px solid #ddd", minWidth: 240 }}
-            />
-          </label>
+    <AppShell
+      title="Todas las causas"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={async () => {
+        await signOut(auth);
+        router.replace("/login");
+      }}
+    >
+      {/* Header interno */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-black/70">
+          Mostrando <span className="font-bold">{showingText.shown}</span> · Total{" "}
+          <span className="font-bold">{total}</span>
+          {total > 0 ? (
+            <>
+              {" "}
+              · Rango <span className="font-bold">{showingText.start}</span>–{" "}
+              <span className="font-bold">{showingText.end}</span>
+            </>
+          ) : null}
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ fontSize: 13 }}>
-            Ordenar por:{" "}
-            <select
-              value={orderField}
-              onChange={(e) => setOrderField(e.target.value as any)}
-              style={{ padding: 6, border: "1px solid #ddd" }}
-            >
-              <option value="createdAt">Fecha de creación</option>
-              <option value="caratulaTentativa">Carátula</option>
-            </select>
-          </label>
-
-          <label style={{ fontSize: 13 }}>
-            Dirección:{" "}
-            <select
-              value={orderDir}
-              onChange={(e) => setOrderDir(e.target.value as any)}
-              style={{ padding: 6, border: "1px solid #ddd" }}
-            >
-              <option value="desc">Descendente</option>
-              <option value="asc">Ascendente</option>
-            </select>
-          </label>
-
-          <button
-            onClick={resetFilters}
-            style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", cursor: "pointer", fontWeight: 800 }}
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/cases/new"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
           >
-            Limpiar filtros
-          </button>
+            + Nueva causa
+          </Link>
+          <Link
+            href="/cases/mine"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
+            Mis causas →
+          </Link>
+          <Link
+            href="/invites"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
+            Mis invitaciones →
+          </Link>
         </div>
       </div>
 
-      {loading && <div style={{ marginTop: 16 }}>Cargando...</div>}
-      {msg && <div style={{ marginTop: 16 }}>⚠️ {msg}</div>}
+      {/* Filtros / orden */}
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-sm font-extrabold">
+              Estado{" "}
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+              >
+                <option value="all">Todos</option>
+                <option value="draft">Pendiente</option>
+                <option value="assigned">Asignada</option>
+              </select>
+            </label>
 
-      {/* tabla/listado */}
-      {!loading && !msg && (
-        <div style={{ marginTop: 16, border: "1px solid #ddd" }}>
+            <label className="text-sm font-extrabold">
+              Jurisdicción{" "}
+              <select
+                value={filterJur}
+                onChange={(e) => setFilterJur(e.target.value)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+              >
+                <option value="all">Todas</option>
+                <option value="nacional">Nacional</option>
+                <option value="federal">Federal</option>
+                <option value="caba">CABA</option>
+                <option value="provincia_bs_as">Provincia Bs. As.</option>
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold">
+              Materia{" "}
+              <select
+                value={filterSpecialtyId}
+                onChange={(e) => setFilterSpecialtyId(e.target.value)}
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+              >
+                <option value="all">Todas</option>
+                {specialtiesOptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold">
+              Creador (email exacto){" "}
+              <input
+                value={filterCreatorEmail}
+                onChange={(e) => setFilterCreatorEmail(e.target.value)}
+                placeholder="ej: abogado@estudio.com"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-sm font-extrabold">
+              Ordenar por{" "}
+              <select
+                value={orderField}
+                onChange={(e) => setOrderField(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+              >
+                <option value="createdAt">Fecha de creación</option>
+                <option value="caratulaTentativa">Carátula</option>
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold">
+              Dirección{" "}
+              <select
+                value={orderDir}
+                onChange={(e) => setOrderDir(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
+              >
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </label>
+
+            <button
+              onClick={resetFilters}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+      ) : null}
+
+      {msg ? (
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+      ) : null}
+
+      {/* Listado */}
+      {!loading && !msg ? (
+        <div className="mt-4 grid gap-3">
           {pageRows.length === 0 ? (
-            <div style={{ padding: 12, opacity: 0.85 }}>No hay causas con esos filtros.</div>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+              No hay causas con esos filtros.
+            </div>
           ) : (
             pageRows.map((r) => (
-              <div
-                key={r.id}
-                style={{
-                  padding: 12,
-                  borderTop: "1px solid #eee",
-                  display: "grid",
-                  gap: 6,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 900 }}>
-                    {r.caratulaTentativa || "(sin carátula)"}{" "}
-                    <span style={{ fontWeight: 400, opacity: 0.6, fontSize: 12 }}>
-                      (#{r.id})
-                    </span>
+              <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-[240px]">
+                    <div className="font-black">
+                      {r.caratulaTentativa || "(sin carátula)"}{" "}
+                      <span className="text-xs font-normal text-black/60">(#{r.id})</span>
+                    </div>
+
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-black/70">
+                      <span>
+                        Materia:{" "}
+                        <span className="font-bold">
+                          {specialtyNameById[r.specialtyId] ?? r.specialtyId ?? "-"}
+                        </span>
+                      </span>
+                      <span>
+                        Jurisdicción: <span className="font-bold">{r.jurisdiccion || "-"}</span>
+                      </span>
+                      <span>
+                        Creada: <span className="font-bold">{formatDateFromSeconds(r.createdAtSec)}</span>
+                      </span>
+                      <span>
+                        Creador: <span className="font-bold">{creatorEmailShown(r.broughtByUid)}</span>
+                      </span>
+                    </div>
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    {r.status === "assigned" ? pill("ASIGNADA", "#d4edda") : pill("PENDIENTE", "#f8f9fa")}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
                   </div>
                 </div>
 
-                <div style={{ fontSize: 13, opacity: 0.9, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <span>
-                    Materia: <b>{specialtyNameById[r.specialtyId] ?? r.specialtyId ?? "-"}</b>
-                  </span>
-                  <span>
-                    Jurisdicción: <b>{r.jurisdiccion || "-"}</b>
-                  </span>
-                  <span>
-                    Creada: <b>{formatDateFromSeconds(r.createdAtSec)}</b>
-                  </span>
-                  <span>
-                    Creador: <b>{creatorEmailShown(r.broughtByUid)}</b>
-                  </span>
-                </div>
-
-                <div>
-                  <a
+                <div className="mt-4">
+                  <Link
                     href={`/cases/${r.id}`}
-                    style={{
-                      display: "inline-block",
-                      padding: "6px 10px",
-                      border: "1px solid #ddd",
-                      textDecoration: "none",
-                      fontSize: 13,
-                      fontWeight: 800,
-                    }}
+                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
                   >
                     Ver detalle →
-                  </a>
+                  </Link>
                 </div>
               </div>
             ))
           )}
         </div>
-      )}
+      ) : null}
 
-      {/* paginación */}
-      <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      {/* Paginación */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           disabled={page <= 1}
           onClick={prevPage}
-          style={{
-            padding: "7px 10px",
-            border: "1px solid #ddd",
-            background: "white",
-            cursor: page <= 1 ? "not-allowed" : "pointer",
-            fontWeight: 800,
-          }}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
         >
           ← Anterior
         </button>
 
-        <div style={{ fontSize: 13 }}>
-          Página <b>{page}</b>
+        <div className="text-sm">
+          Página <span className="font-black">{page}</span>
         </div>
 
         <button
           disabled={!canNext}
           onClick={nextPage}
-          style={{
-            padding: "7px 10px",
-            border: "1px solid #ddd",
-            background: "white",
-            cursor: !canNext ? "not-allowed" : "pointer",
-            fontWeight: 800,
-          }}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
         >
           Siguiente →
         </button>
       </div>
 
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-        Nota: el filtro “Creador” funciona por <b>email exacto</b> (por ahora).
+      <div className="mt-3 text-xs text-black/60">
+        Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por ahora).
       </div>
-    </main>
+    </AppShell>
   );
 }

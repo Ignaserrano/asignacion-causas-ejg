@@ -2,12 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
+import {
+  collectionGroup,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
+
 import { getUserProfile } from "@/lib/users";
 import { listActiveSpecialties, listPracticingUsers } from "@/lib/data";
-
 import { createCaseWithInvites } from "@/lib/cases";
 
 type Jurisdiccion = "nacional" | "federal" | "caba" | "provincia_bs_as";
@@ -19,6 +28,12 @@ type UserRow = { uid: string; email: string; role: string };
 export default function NewCasePage() {
   const router = useRouter();
 
+  // auth/shell data
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // auth guard
   const [authReady, setAuthReady] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
 
@@ -45,21 +60,51 @@ export default function NewCasePage() {
   const requiredDirectCount = broughtByParticipates ? 1 : 2;
   const directAssigneesSet = useMemo(() => new Set(directAssignees), [directAssignees]);
 
-  // Auth guard
+  // Auth guard + shell data
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
         router.replace("/login");
         return;
       }
-      setUid(u.uid);
 
-      const profile = await getUserProfile(u.uid);
-      if (!profile) {
-        router.replace("/dashboard");
-        return;
+      setUser(u);
+      setUid(u.uid);
+      setMsg(null);
+
+      // rol (para tabs admin)
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
       }
-      setAuthReady(true);
+
+      // pending invites (badge tabs)
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
+
+      // perfil (tu guard original)
+      try {
+        const profile = await getUserProfile(u.uid);
+        if (!profile) {
+          router.replace("/dashboard");
+          return;
+        }
+        setAuthReady(true);
+      } catch {
+        router.replace("/dashboard");
+      }
     });
 
     return () => unsub();
@@ -115,60 +160,90 @@ export default function NewCasePage() {
     return null;
   }
 
-async function handleSubmit(e: React.FormEvent) {
-  e.preventDefault();
-  setMsg(null);
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
 
-  const err = validate();
-  if (err) {
-    setMsg("⚠️ " + err);
-    return;
+    const err = validate();
+    if (err) {
+      setMsg("⚠️ " + err);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const res = await createCaseWithInvites({
+        caratulaTentativa,
+        specialtyId,
+        objeto,
+        resumen,
+        jurisdiccion,
+        broughtByParticipates,
+        assignmentMode,
+        directAssigneesUids: assignmentMode === "direct" ? directAssignees : [],
+        directJustification: assignmentMode === "direct" ? directJustification : "",
+      });
+
+      router.replace(`/cases/${res.caseId}`);
+    } catch (e: any) {
+      setMsg("❌ Error: " + (e?.message ?? "desconocido"));
+    } finally {
+      setSaving(false);
+    }
   }
 
-  setSaving(true);
-  try {
-    const res = await createCaseWithInvites({
-      caratulaTentativa,
-      specialtyId,
-      objeto,
-      resumen,
-      jurisdiccion,
-      broughtByParticipates,
-      assignmentMode,
-      directAssigneesUids: assignmentMode === "direct" ? directAssignees : [],
-      directJustification: assignmentMode === "direct" ? directJustification : "",
-    });
-
-    router.replace(`/cases/${res.caseId}`);
-  } catch (e: any) {
-    setMsg("❌ Error: " + (e?.message ?? "desconocido"));
-  } finally {
-    setSaving(false);
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
   }
-}
-  
-    if (!authReady) return <main style={{ padding: 16 }}>Cargando...</main>;
+
+  if (!authReady) {
+    return (
+      <AppShell
+        title="Nueva causa"
+        userEmail={user?.email ?? null}
+        role={role}
+        pendingInvites={pendingInvites}
+        onLogout={doLogout}
+      >
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+      </AppShell>
+    );
+  }
 
   return (
-    <main style={{ maxWidth: 920, margin: "40px auto", padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Nueva causa</h1>
+    <AppShell
+      title="Nueva causa"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      <div className="mb-4">
+        <h1 className="text-xl font-black">Nueva causa</h1>
+        <div className="mt-1 text-sm text-black/60">
+          Completá los datos para crear la causa y, si corresponde, invitar/asignar abogados.
+        </div>
+      </div>
 
-      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
-        <label>
-          Carátula tentativa
+      <form onSubmit={handleSubmit} className="grid gap-4">
+        {/* Carátula */}
+        <label className="grid gap-2">
+          <span className="text-sm font-extrabold">Carátula tentativa</span>
           <input
             value={caratulaTentativa}
             onChange={(e) => setCaratulaTentativa(e.target.value)}
-            style={{ width: "100%", padding: 10, marginTop: 6 }}
+            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
           />
         </label>
 
-        <label>
-          Materia (especialidad)
+        {/* Materia */}
+        <label className="grid gap-2">
+          <span className="text-sm font-extrabold">Materia (especialidad)</span>
           <select
             value={specialtyId}
             onChange={(e) => setSpecialtyId(e.target.value)}
-            style={{ width: "100%", padding: 10, marginTop: 6 }}
+            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
           >
             {specialties.map((s) => (
               <option key={s.id} value={s.id}>
@@ -178,30 +253,33 @@ async function handleSubmit(e: React.FormEvent) {
           </select>
         </label>
 
-        <label>
-          Objeto
+        {/* Objeto */}
+        <label className="grid gap-2">
+          <span className="text-sm font-extrabold">Objeto</span>
           <textarea
             value={objeto}
             onChange={(e) => setObjeto(e.target.value)}
-            style={{ width: "100%", padding: 10, marginTop: 6, minHeight: 90 }}
+            className="min-h-[96px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
           />
         </label>
 
-        <label>
-          Resumen
+        {/* Resumen */}
+        <label className="grid gap-2">
+          <span className="text-sm font-extrabold">Resumen</span>
           <textarea
             value={resumen}
             onChange={(e) => setResumen(e.target.value)}
-            style={{ width: "100%", padding: 10, marginTop: 6, minHeight: 90 }}
+            className="min-h-[96px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
           />
         </label>
 
-        <label>
-          Jurisdicción
+        {/* Jurisdicción */}
+        <label className="grid gap-2">
+          <span className="text-sm font-extrabold">Jurisdicción</span>
           <select
             value={jurisdiccion}
             onChange={(e) => setJurisdiccion(e.target.value as Jurisdiccion)}
-            style={{ width: "100%", padding: 10, marginTop: 6 }}
+            className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
           >
             <option value="nacional">Nacional</option>
             <option value="federal">Federal</option>
@@ -210,81 +288,103 @@ async function handleSubmit(e: React.FormEvent) {
           </select>
         </label>
 
-        <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        {/* Participa */}
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm">
           <input
             type="checkbox"
             checked={broughtByParticipates}
             onChange={(e) => setBroughtByParticipates(e.target.checked)}
+            className="h-4 w-4"
           />
-          Voy a participar directamente en la causa
+          <span className="font-extrabold">Voy a participar directamente en la causa</span>
         </label>
 
-        <div style={{ border: "1px solid #ddd", padding: 12 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Modo de asignación</div>
+        {/* Modo de asignación */}
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="text-sm font-black">Modo de asignación</div>
 
-          <label style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 8 }}>
-            <input
-              type="radio"
-              name="assignmentMode"
-              checked={assignmentMode === "auto"}
-              onChange={() => setAssignmentMode("auto")}
-            />
-            Asignación automática (turno estricto)
-          </label>
+          <div className="mt-3 grid gap-2">
+            <label className="flex items-center gap-3 text-sm">
+              <input
+                type="radio"
+                name="assignmentMode"
+                checked={assignmentMode === "auto"}
+                onChange={() => setAssignmentMode("auto")}
+                className="h-4 w-4"
+              />
+              <span className="font-extrabold">Asignación automática</span>
+              <span className="text-black/60">(turno estricto)</span>
+            </label>
 
-          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              type="radio"
-              name="assignmentMode"
-              checked={assignmentMode === "direct"}
-              onChange={() => setAssignmentMode("direct")}
-            />
-            Asignación directa (con justificación)
-          </label>
+            <label className="flex items-center gap-3 text-sm">
+              <input
+                type="radio"
+                name="assignmentMode"
+                checked={assignmentMode === "direct"}
+                onChange={() => setAssignmentMode("direct")}
+                className="h-4 w-4"
+              />
+              <span className="font-extrabold">Asignación directa</span>
+              <span className="text-black/60">(con justificación)</span>
+            </label>
+          </div>
 
-          {assignmentMode === "direct" && (
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div>
-                Elegí <b>{requiredDirectCount}</b> abogado(s) (sin restricciones):
+          {assignmentMode === "direct" ? (
+            <div className="mt-4 grid gap-3">
+              <div className="text-sm text-black/70">
+                Elegí <span className="font-black">{requiredDirectCount}</span> abogado(s) (sin restricciones):
               </div>
 
-              <div style={{ border: "1px solid #eee", padding: 10, maxHeight: 240, overflow: "auto" }}>
-                {practicingUsers.map((u) => (
-                  <label key={u.uid} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                    <input
-                      type="checkbox"
-                      checked={directAssigneesSet.has(u.uid)}
-                      onChange={() => toggleDirectAssignee(u.uid)}
-                      disabled={!directAssigneesSet.has(u.uid) && directAssignees.length >= requiredDirectCount}
-                    />
-                    <span>{u.email}</span>
-                    <span style={{ opacity: 0.6 }}>({u.role})</span>
-                  </label>
-                ))}
+              <div className="max-h-[260px] overflow-auto rounded-xl border border-gray-200 p-3">
+                {practicingUsers.map((u) => {
+                  const checked = directAssigneesSet.has(u.uid);
+                  const disabled = !checked && directAssignees.length >= requiredDirectCount;
+
+                  return (
+                    <label key={u.uid} className="flex items-center gap-3 py-1 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDirectAssignee(u.uid)}
+                        disabled={disabled}
+                        className="h-4 w-4 disabled:opacity-60"
+                      />
+                      <span className="font-semibold">{u.email}</span>
+                      <span className="text-black/50">({u.role})</span>
+                    </label>
+                  );
+                })}
               </div>
 
-              <label>
-                Justificación (obligatoria)
+              <label className="grid gap-2">
+                <span className="text-sm font-extrabold">Justificación (obligatoria)</span>
                 <textarea
                   value={directJustification}
                   onChange={(e) => setDirectJustification(e.target.value)}
-                  style={{ width: "100%", padding: 10, marginTop: 6, minHeight: 80 }}
+                  className="min-h-[88px] w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
                 />
               </label>
+
+              <div className="text-xs text-black/60">
+                Recordatorio: mínimo 10 caracteres. Queda registrada en la invitación.
+              </div>
             </div>
-          )}
+          ) : null}
         </div>
 
-        {msg && (
-          <p>
-            <b>{msg}</b>
-          </p>
-        )}
+        {msg ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm font-bold">
+            {msg}
+          </div>
+        ) : null}
 
-        <button disabled={saving} style={{ padding: 10, cursor: "pointer" }}>
+        <button
+          disabled={saving}
+          className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60"
+        >
           {saving ? "Guardando..." : "Guardar causa"}
         </button>
       </form>
-    </main>
+    </AppShell>
   );
 }

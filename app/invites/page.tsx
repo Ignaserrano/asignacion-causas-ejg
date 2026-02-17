@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   collectionGroup,
   query,
@@ -10,10 +11,12 @@ import {
   onSnapshot,
   doc,
   getDoc,
+  getDocs,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 import { auth, db, functions } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
 type InviteStatus = "pending" | "accepted" | "rejected";
 type InviteMode = "auto" | "direct";
@@ -35,48 +38,31 @@ type InviteRow = {
 
   createdByUid?: string;
 
-  invitedAtSec: number; // para ordenar
-  respondedAtSec: number; // para ordenar respondidas
+  invitedAtSec: number;
+  respondedAtSec: number;
 };
 
-function badge(text: string, bg?: string) {
+function Badge({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "warn" | "ok" | "bad";
+}) {
+  const cls =
+    tone === "warn"
+      ? "bg-orange-100 border-orange-300"
+      : tone === "ok"
+      ? "bg-green-100 border-green-300"
+      : tone === "bad"
+      ? "bg-red-100 border-red-300"
+      : "bg-gray-100 border-gray-300";
+
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "4px 10px",
-        borderRadius: 999,
-        border: "1px solid #ddd",
-        fontSize: 12,
-        fontWeight: 900,
-        background: bg ?? "white",
-      }}
-    >
-      {text}
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+      {children}
     </span>
   );
-}
-
-function pill(text: string, bg: string) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 999,
-        fontSize: 12,
-        fontWeight: 900,
-        background: bg,
-        border: "1px solid #ddd",
-      }}
-    >
-      {text}
-    </span>
-  );
-}
-
-function sectionTitle(text: string) {
-  return <div style={{ marginTop: 18, fontWeight: 900, fontSize: 14 }}>{text}</div>;
 }
 
 function toSecondsMaybe(ts: any): number {
@@ -92,6 +78,12 @@ function formatDateFromSeconds(seconds: number): string {
 export default function InvitesPage() {
   const router = useRouter();
 
+  // auth/shell data
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // page data
   const [items, setItems] = useState<InviteRow[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -102,24 +94,56 @@ export default function InvitesPage() {
   const pending = useMemo(() => items.filter((i) => i.status === "pending"), [items]);
   const responded = useMemo(() => items.filter((i) => i.status !== "pending"), [items]);
 
-  const pendingCount = pending.length;
+  const pendingSorted = useMemo(() => {
+    return [...pending].sort((a, b) => (b.invitedAtSec ?? 0) - (a.invitedAtSec ?? 0));
+  }, [pending]);
 
+  const respondedSorted = useMemo(() => {
+    return [...responded].sort((a, b) => {
+      const ta = a.respondedAtSec || a.invitedAtSec || 0;
+      const tb = b.respondedAtSec || b.invitedAtSec || 0;
+      return tb - ta;
+    });
+  }, [responded]);
+
+  // Auth + rol + contador + snapshot
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, (u) => {
+    const unsubAuth = onAuthStateChanged(auth, async (u) => {
       if (!u) {
         router.replace("/login");
         return;
       }
 
+      setUser(u);
       setMsg(null);
 
-      const q = query(
-        collectionGroup(db, "invites"),
-        where("invitedUid", "==", u.uid)
-      );
+      // rol
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
+      }
+
+      // contador (para tabs)
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
+
+      // listado (realtime)
+      const qInv = query(collectionGroup(db, "invites"), where("invitedUid", "==", u.uid));
 
       const unsub = onSnapshot(
-        q,
+        qInv,
         (snap) => {
           (async () => {
             const list: InviteRow[] = await Promise.all(
@@ -172,6 +196,7 @@ export default function InvitesPage() {
             );
 
             setItems(list);
+            setPendingInvites(list.filter((i) => i.status === "pending").length);
           })().catch((err) => setMsg(err?.message ?? "Error cargando invitaciones"));
         },
         (err) => setMsg(err.message)
@@ -213,17 +238,10 @@ export default function InvitesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
-  const pendingSorted = useMemo(() => {
-    return [...pending].sort((a, b) => (b.invitedAtSec ?? 0) - (a.invitedAtSec ?? 0));
-  }, [pending]);
-
-  const respondedSorted = useMemo(() => {
-    return [...responded].sort((a, b) => {
-      const ta = (a.respondedAtSec || a.invitedAtSec || 0);
-      const tb = (b.respondedAtSec || b.invitedAtSec || 0);
-      return tb - ta;
-    });
-  }, [responded]);
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
+  }
 
   async function act(inv: InviteRow, decision: "accepted" | "rejected") {
     if (inv.status !== "pending") return;
@@ -251,196 +269,134 @@ export default function InvitesPage() {
     return emailByUid[uid] ?? uid;
   }
 
-  function timelinePending(i: InviteRow) {
+  function Timeline({ i, responded }: { i: InviteRow; responded: boolean }) {
     return (
-      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.72, display: "grid", gap: 2 }}>
+      <div className="mt-2 grid gap-1 text-xs text-black/60">
         <div>Invitada el: {formatDateFromSeconds(i.invitedAtSec)}</div>
+        {responded ? (
+          <div>
+            Respondida el: {i.respondedAtSec ? formatDateFromSeconds(i.respondedAtSec) : "-"}
+          </div>
+        ) : null}
         <div>Invitada por: {invitedByLabel(i)}</div>
       </div>
     );
   }
 
-  function timelineResponded(i: InviteRow) {
+  function RowCard({ i, kind }: { i: InviteRow; kind: "pending" | "responded" }) {
+    const isPending = kind === "pending";
+
     return (
-      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.72, display: "grid", gap: 2 }}>
-        <div>Invitada el: {formatDateFromSeconds(i.invitedAtSec)}</div>
-        <div>
-          Respondida el:{" "}
-          {i.respondedAtSec ? formatDateFromSeconds(i.respondedAtSec) : "-"}
+      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-[240px]">
+            <div className="font-black">
+              {i.caratula}{" "}
+              <span className="text-xs font-normal text-black/60">(#{i.caseId})</span>
+            </div>
+            <div className="mt-1 text-sm text-black/70">
+              Materia: <span className="font-bold">{i.specialtyName || "-"}</span> · Jurisdicción:{" "}
+              <span className="font-bold">{i.jurisdiccion || "-"}</span>
+            </div>
+
+            <Timeline i={i} responded={!isPending} />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : <Badge>AUTOMÁTICA</Badge>}
+            {isPending ? (
+              <Badge>PENDIENTE</Badge>
+            ) : i.status === "accepted" ? (
+              <Badge tone="ok">ACEPTADA</Badge>
+            ) : (
+              <Badge tone="bad">RECHAZADA</Badge>
+            )}
+          </div>
         </div>
-        <div>Invitada por: {invitedByLabel(i)}</div>
+
+        {i.mode === "direct" && i.directJustification ? (
+          <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm">
+            <span className="font-black">Justificación:</span> {i.directJustification}
+          </div>
+        ) : null}
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href={`/cases/${i.caseId}`}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
+            Ver causa →
+          </Link>
+
+          {isPending ? (
+            <div className="flex gap-2">
+              <button
+                disabled={busyId === i.id}
+                onClick={() => act(i, "accepted")}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+              >
+                {busyId === i.id ? "..." : "Aceptar"}
+              </button>
+
+              <button
+                disabled={busyId === i.id}
+                onClick={() => act(i, "rejected")}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+              >
+                {busyId === i.id ? "..." : "Rechazar"}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     );
   }
 
   return (
-    <main style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
-      {/* Header integrado al flujo + contador */}
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontWeight: 900, fontSize: 22 }}>Mis invitaciones</h1>
-
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <a href="/dashboard" style={{ textDecoration: "none", fontWeight: 700 }}>
-            Inicio →
-          </a>
-          <a href="/cases/mine" style={{ textDecoration: "none", fontWeight: 700 }}>
-            Mis causas →
-          </a>
-          <a href="/cases" style={{ textDecoration: "none" }}>
-            Ver todas →
-          </a>
-          {pendingCount > 0 && pill(`${pendingCount} pendientes`, "#ffe9c7")}
+    <AppShell
+      title="Mis invitaciones"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      {/* mini header interno (opcional) */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-black/70">
+          Revisá tus invitaciones pendientes y el historial de respuestas.
         </div>
+        {pendingInvites > 0 ? <Badge tone="warn">{pendingInvites} pendientes</Badge> : null}
       </div>
 
-      {msg && <div style={{ marginTop: 12 }}>⚠️ {msg}</div>}
+      {msg ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          ⚠️ {msg}
+        </div>
+      ) : null}
 
-      {/* ========================= Pendientes ========================= */}
-      {sectionTitle("Invitaciones pendientes")}
-
-      <div style={{ marginTop: 10, border: "1px solid #ddd" }}>
+      {/* Pendientes */}
+      <div className="text-sm font-black">Invitaciones pendientes</div>
+      <div className="mt-3 grid gap-3">
         {pendingSorted.length === 0 ? (
-          <div style={{ padding: 12, opacity: 0.85 }}>No tenés invitaciones pendientes.</div>
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+            No tenés invitaciones pendientes.
+          </div>
         ) : (
-          pendingSorted.map((i) => (
-            <div
-              key={i.id}
-              style={{
-                padding: 12,
-                borderTop: "1px solid #eee",
-                display: "grid",
-                gap: 8,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 900 }}>
-                  {i.caratula}{" "}
-                  <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
-                    (#{i.caseId})
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  {i.mode === "direct" ? badge("DIRECTA", "#ffe9c7") : badge("AUTOMÁTICA")}
-                  {badge("PENDIENTE")}
-                </div>
-              </div>
-
-              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                Materia: <b>{i.specialtyName || "-"}</b> · Jurisdicción:{" "}
-                <b>{i.jurisdiccion || "-"}</b>
-                {timelinePending(i)}
-              </div>
-
-              {i.mode === "direct" && i.directJustification && (
-                <div style={{ background: "#fff3cd", padding: 10, fontSize: 13 }}>
-                  <b>Justificación:</b> {i.directJustification}
-                </div>
-              )}
-
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <a
-                  href={`/cases/${i.caseId}`}
-                  style={{
-                    padding: "6px 10px",
-                    border: "1px solid #ddd",
-                    textDecoration: "none",
-                    fontSize: 13,
-                  }}
-                >
-                  Ver causa →
-                </a>
-
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    disabled={busyId === i.id}
-                    onClick={() => act(i, "accepted")}
-                    style={{
-                      padding: "7px 10px",
-                      border: "1px solid #ddd",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    {busyId === i.id ? "..." : "Aceptar"}
-                  </button>
-
-                  <button
-                    disabled={busyId === i.id}
-                    onClick={() => act(i, "rejected")}
-                    style={{
-                      padding: "7px 10px",
-                      border: "1px solid #ddd",
-                      background: "white",
-                      cursor: "pointer",
-                      fontWeight: 900,
-                    }}
-                  >
-                    {busyId === i.id ? "..." : "Rechazar"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))
+          pendingSorted.map((i) => <RowCard key={i.id} i={i} kind="pending" />)
         )}
       </div>
 
-      {/* ========================= Respondidas ========================= */}
-      {sectionTitle("Invitaciones respondidas")}
-
-      <div style={{ marginTop: 10, border: "1px solid #ddd" }}>
+      {/* Respondidas */}
+      <div className="mt-8 text-sm font-black">Invitaciones respondidas</div>
+      <div className="mt-3 grid gap-3">
         {respondedSorted.length === 0 ? (
-          <div style={{ padding: 12, opacity: 0.85 }}>Todavía no respondiste invitaciones.</div>
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+            Todavía no respondiste invitaciones.
+          </div>
         ) : (
-          respondedSorted.map((i) => (
-            <div
-              key={i.id}
-              style={{
-                padding: 12,
-                borderTop: "1px solid #eee",
-                display: "grid",
-                gap: 8,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 900 }}>
-                  {i.caratula}{" "}
-                  <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
-                    (#{i.caseId})
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  {i.mode === "direct" ? badge("DIRECTA", "#ffe9c7") : badge("AUTOMÁTICA")}
-                  {i.status === "accepted" && badge("ACEPTADA", "#d4edda")}
-                  {i.status === "rejected" && badge("RECHAZADA", "#f8d7da")}
-                </div>
-              </div>
-
-              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                Materia: <b>{i.specialtyName || "-"}</b> · Jurisdicción:{" "}
-                <b>{i.jurisdiccion || "-"}</b>
-                {timelineResponded(i)}
-              </div>
-
-              <div>
-                <a
-                  href={`/cases/${i.caseId}`}
-                  style={{
-                    padding: "6px 10px",
-                    border: "1px solid #ddd",
-                    textDecoration: "none",
-                    fontSize: 13,
-                  }}
-                >
-                  Ver causa →
-                </a>
-              </div>
-            </div>
-          ))
+          respondedSorted.map((i) => <RowCard key={i.id} i={i} kind="responded" />)
         )}
       </div>
-    </main>
+    </AppShell>
   );
 }

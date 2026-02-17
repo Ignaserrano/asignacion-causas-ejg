@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   collection,
   getDocs,
@@ -16,6 +17,7 @@ import {
 } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
 type CaseRow = {
   id: string;
@@ -36,19 +38,17 @@ function formatDateFromSeconds(seconds?: number) {
   return new Date(seconds * 1000).toLocaleString();
 }
 
-function badge(text: string) {
+function Badge({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "ok";
+}) {
+  const cls = tone === "ok" ? "bg-green-100 border-green-300" : "bg-gray-100 border-gray-300";
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "4px 10px",
-        borderRadius: 999,
-        border: "1px solid #ddd",
-        fontSize: 12,
-        fontWeight: 800,
-      }}
-    >
-      {text}
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+      {children}
     </span>
   );
 }
@@ -56,13 +56,19 @@ function badge(text: string) {
 export default function MyCasesPage() {
   const router = useRouter();
 
+  // auth/shell data
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // page data
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
 
-  // filtros (igual que en /cases)
+  // filtros
   const [filterStatus, setFilterStatus] = useState<"all" | "draft" | "assigned">("all");
   const [search, setSearch] = useState("");
 
@@ -73,8 +79,31 @@ export default function MyCasesPage() {
         return;
       }
 
+      setUser(u);
       setLoading(true);
       setMsg(null);
+
+      // rol (para admin tab)
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
+      }
+
+      // pending invites (para badge en tabs)
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
 
       try {
         // 1) Causas creadas por mí
@@ -85,19 +114,15 @@ export default function MyCasesPage() {
           limit(50)
         );
 
-        // 2) Causas donde estoy confirmado
-        // (no permite orderBy distinto a veces; pedimos sin orderBy para evitar líos de índices)
+        // 2) Causas donde estoy confirmado (sin orderBy para evitar índices)
         const qConfirmed = query(
           collection(db, "cases"),
           where("confirmedAssigneesUids", "array-contains", u.uid),
           limit(50)
         );
 
-        // 3) CaseIds donde fui invitado (collectionGroup invites)
-        const qInvites = query(
-          collectionGroup(db, "invites"),
-          where("invitedUid", "==", u.uid)
-        );
+        // 3) CaseIds donde fui invitado
+        const qInvites = query(collectionGroup(db, "invites"), where("invitedUid", "==", u.uid));
 
         const [createdSnap, confirmedSnap, invitesSnap] = await Promise.all([
           getDocs(qCreated),
@@ -107,7 +132,6 @@ export default function MyCasesPage() {
 
         const byId = new Map<string, CaseRow>();
 
-        // helper para meter cases en map
         const addCaseDoc = (id: string, data: any) => {
           byId.set(id, { id, ...(data as any) });
         };
@@ -115,13 +139,9 @@ export default function MyCasesPage() {
         createdSnap.docs.forEach((d) => addCaseDoc(d.id, d.data()));
         confirmedSnap.docs.forEach((d) => addCaseDoc(d.id, d.data()));
 
-        // traer las causas de los invites (por docId del parent)
+        // traer causas de invitaciones (por docId del parent)
         const invitedCaseIds = Array.from(
-          new Set(
-            invitesSnap.docs
-              .map((d) => d.ref.parent.parent?.id ?? "")
-              .filter(Boolean)
-          )
+          new Set(invitesSnap.docs.map((d) => d.ref.parent.parent?.id ?? "").filter(Boolean))
         );
 
         await Promise.all(
@@ -134,7 +154,7 @@ export default function MyCasesPage() {
           })
         );
 
-        // ordenar por createdAt desc (si no existe, al final)
+        // ordenar por createdAt desc
         const list = Array.from(byId.values()).sort((a, b) => {
           const as = a.createdAt?.seconds ?? 0;
           const bs = b.createdAt?.seconds ?? 0;
@@ -187,48 +207,50 @@ export default function MyCasesPage() {
     });
   }, [rows, filterStatus, search]);
 
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
+  }
+
   return (
-    <main style={{ maxWidth: 980, margin: "40px auto", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Mis causas</h1>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          
-                    <a href="/dashboard" style={{ textDecoration: "none", fontWeight: 800 }}>
-            Inicio →
-          </a>
-          
-          <a href="/cases" style={{ textDecoration: "none" }}>
-            Ver todas →
-          </a>
-          <a
+    <AppShell
+      title="Mis causas"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      {/* Header interno */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-black/70">
+          Mostrando <span className="font-bold">{filtered.length}</span> de{" "}
+          <span className="font-bold">{rows.length}</span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Link
             href="/cases/new"
-            style={{
-              display: "inline-block",
-              padding: "8px 12px",
-              border: "1px solid #ddd",
-              textDecoration: "none",
-              fontWeight: 700,
-            }}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
           >
             + Nueva causa
-          </a>
-          <a href="/invites" style={{ textDecoration: "none" }}>
-            Mis invitaciones →
-          </a>
+          </Link>
+          <Link
+            href="/cases"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
+            Ver todas →
+          </Link>
         </div>
       </div>
 
-      <div style={{ marginTop: 10, opacity: 0.8 }}>
-        Mostrando {filtered.length} de {rows.length}
-      </div>
-
-      <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <label style={{ fontSize: 13 }}>
-          Estado:{" "}
+      {/* Filtros */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <label className="text-sm font-extrabold">
+          Estado{" "}
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value as any)}
-            style={{ padding: 6, border: "1px solid #ddd" }}
+            className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold"
           >
             <option value="all">Todos</option>
             <option value="draft">Draft</option>
@@ -240,7 +262,7 @@ export default function MyCasesPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar por carátula…"
-          style={{ padding: 7, border: "1px solid #ddd", minWidth: 260 }}
+          className="min-w-[240px] flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
         />
 
         <button
@@ -248,19 +270,26 @@ export default function MyCasesPage() {
             setFilterStatus("all");
             setSearch("");
           }}
-          style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", cursor: "pointer" }}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
         >
           Limpiar
         </button>
       </div>
 
-      {loading && <div style={{ marginTop: 16 }}>Cargando...</div>}
-      {msg && <div style={{ marginTop: 16 }}>⚠️ {msg}</div>}
+      {loading ? (
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+      ) : null}
 
-      {!loading && !msg && (
-        <div style={{ marginTop: 16, border: "1px solid #ddd" }}>
+      {msg ? (
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+      ) : null}
+
+      {!loading && !msg ? (
+        <div className="grid gap-3">
           {filtered.length === 0 ? (
-            <div style={{ padding: 12 }}>No tenés causas aún (o no coinciden con el filtro).</div>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+              No tenés causas aún (o no coinciden con el filtro).
+            </div>
           ) : (
             filtered.map((r) => {
               const required = Number(r.requiredAssigneesCount ?? 2);
@@ -268,61 +297,47 @@ export default function MyCasesPage() {
               const missing = Math.max(0, required - confirmed);
 
               return (
-                <div
-                  key={r.id}
-                  style={{
-                    padding: 12,
-                    borderTop: "1px solid #eee",
-                    display: "grid",
-                    gap: 6,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>
-                      <a href={`/cases/${r.id}`} style={{ textDecoration: "none" }}>
+                <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-[240px]">
+                      <Link href={`/cases/${r.id}`} className="font-black hover:underline">
                         {r.caratulaTentativa || "(sin carátula)"}
-                      </a>
+                      </Link>
+
+                      <div className="mt-1 text-sm text-black/70">
+                        Materia:{" "}
+                        <span className="font-bold">
+                          {specialtyNameById[r.specialtyId] ?? r.specialtyId}
+                        </span>{" "}
+                        · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
+                        <span className="font-bold">{formatDateFromSeconds(r.createdAt?.seconds)}</span>
+                      </div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      {r.status === "assigned" ? badge("ASIGNADA") : badge("DRAFT")}
-                      {missing > 0 ? (
-                        <span style={{ fontSize: 12, opacity: 0.9 }}>
-                          faltan {missing} ({confirmed}/{required})
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 12, opacity: 0.9 }}>
-                          completo ({confirmed}/{required})
-                        </span>
-                      )}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>DRAFT</Badge>}
+                      <span className="text-xs font-semibold text-black/70">
+                        {missing > 0
+                          ? `faltan ${missing} (${confirmed}/${required})`
+                          : `completo (${confirmed}/${required})`}
+                      </span>
                     </div>
                   </div>
 
-                  <div style={{ fontSize: 13, opacity: 0.85 }}>
-                    Materia: <b>{specialtyNameById[r.specialtyId] ?? r.specialtyId}</b> · Jurisdicción:{" "}
-                    <b>{r.jurisdiccion}</b> · Creada: <b>{formatDateFromSeconds(r.createdAt?.seconds)}</b>
-                  </div>
-
-                  <div>
-                    <a
+                  <div className="mt-4">
+                    <Link
                       href={`/cases/${r.id}`}
-                      style={{
-                        display: "inline-block",
-                        marginTop: 2,
-                        padding: "6px 10px",
-                        border: "1px solid #ddd",
-                        textDecoration: "none",
-                        fontSize: 13,
-                      }}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
                     >
                       Ver detalle →
-                    </a>
+                    </Link>
                   </div>
                 </div>
               );
             })
           )}
         </div>
-      )}
-    </main>
+      ) : null}
+    </AppShell>
   );
 }

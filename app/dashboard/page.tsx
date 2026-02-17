@@ -6,56 +6,35 @@ import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import { collectionGroup, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
-function cardButton(href: string, title: string, subtitle?: string, tag?: string) {
+function CardLink({
+  href,
+  title,
+  subtitle,
+  tag,
+}: {
+  href: string;
+  title: string;
+  subtitle?: string;
+  tag?: string;
+}) {
   return (
     <a
       href={href}
-      style={{
-        border: "1px solid #ddd",
-        padding: 16,
-        textDecoration: "none",
-        display: "grid",
-        gap: 6,
-      }}
+      className="group rounded-xl border border-gray-300 bg-white p-4 shadow-sm transition hover:shadow-md"
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>{title}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-base font-black">{title}</div>
         {tag ? (
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 900,
-              border: "1px solid #ddd",
-              padding: "2px 8px",
-              borderRadius: 999,
-              background: "#f8f9fa",
-            }}
-          >
+          <span className="rounded-full border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-black">
             {tag}
           </span>
         ) : null}
       </div>
-      {subtitle ? <div style={{ fontSize: 13, opacity: 0.8 }}>{subtitle}</div> : null}
+      {subtitle ? <div className="mt-1 text-sm text-black/70">{subtitle}</div> : null}
+      <div className="mt-3 text-sm font-extrabold text-black/70 group-hover:text-black">Abrir →</div>
     </a>
-  );
-}
-
-function pill(text: string, bg: string) {
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 999,
-        fontSize: 12,
-        fontWeight: 900,
-        background: bg,
-        border: "1px solid #ddd",
-      }}
-    >
-      {text}
-    </span>
   );
 }
 
@@ -81,12 +60,10 @@ export default function DashboardPage() {
       setMsg(null);
 
       try {
-        // 1) Leer rol desde users/{uid}
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
         setRole(String(data?.role ?? "lawyer"));
 
-        // 2) Contador de invitaciones pendientes
         const qInv = query(
           collectionGroup(db, "invites"),
           where("invitedUid", "==", u.uid),
@@ -112,101 +89,57 @@ export default function DashboardPage() {
   const isAdmin = role === "admin";
 
   return (
-    <main style={{ maxWidth: 980, margin: "40px auto", padding: 16 }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 900 }}>
-            Dashboard {isAdmin ? "(Admin)" : ""}
-          </h1>
+    <AppShell
+      title="Dashboard"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      {msg ? (
+        <div className="mb-4 rounded-xl border border-gray-300 bg-white p-3 text-sm">
+          ⚠️ {msg}
+        </div>
+      ) : null}
 
-          <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-            Logueado como: <b>{user?.email ?? "-"}</b>{" "}
-            {isAdmin ? <span style={{ marginLeft: 8 }}>{pill("ADMIN", "#ffe9c7")}</span> : null}
+      {loading ? (
+        <div className="mb-4 rounded-xl border border-gray-300 bg-white p-3 text-sm">
+          Cargando...
+        </div>
+      ) : null}
+
+      <div className="text-sm font-black">Trabajo</div>
+      <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
+        <CardLink href="/cases/mine" title="Mis causas" subtitle="Causas donde participo o que creé" />
+        <CardLink
+          href="/invites"
+          title="Mis invitaciones"
+          subtitle={pendingInvites > 0 ? `Tenés ${pendingInvites} pendientes` : "No tenés pendientes"}
+          tag={pendingInvites > 0 ? "PENDIENTES" : undefined}
+        />
+        <CardLink href="/cases/new" title="Agregar nueva causa" subtitle="Cargar una causa y enviar invitaciones" />
+        <CardLink href="/specialties" title="Mis especialidades" subtitle="Ver tus especialidades" />
+      </div>
+
+      {isAdmin ? (
+        <>
+          <div className="mt-8 text-sm font-black">Administración</div>
+          <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
+            <CardLink
+              href="/admin/lawyers"
+              title="Administrar abogados"
+              subtitle="Crear/editar abogados, estado y especialidades"
+              tag="ADMIN"
+            />
+            <CardLink
+              href="/admin/specialties"
+              title="Administrar especialidades"
+              subtitle="Crear/editar/activar especialidades"
+              tag="ADMIN"
+            />
           </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <a href="/cases/mine" style={{ textDecoration: "none", fontWeight: 800 }}>
-            Mis causas →
-          </a>
-
-          <a
-            href="/invites"
-            style={{
-              textDecoration: "none",
-              display: "inline-flex",
-              gap: 8,
-              alignItems: "center",
-              fontWeight: 800,
-            }}
-          >
-            Mis invitaciones →
-            {pendingInvites > 0 && pill(`${pendingInvites}`, "#ffe9c7")}
-          </a>
-
-          <button
-            onClick={doLogout}
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ddd",
-              background: "white",
-              cursor: "pointer",
-              fontWeight: 800,
-            }}
-          >
-            Cerrar sesión
-          </button>
-        </div>
-      </div>
-
-      {msg && <div style={{ marginTop: 14 }}>⚠️ {msg}</div>}
-      {loading && <div style={{ marginTop: 14 }}>Cargando...</div>}
-
-      {/* Panel abogado (siempre) */}
-      <div style={{ marginTop: 18 }}>
-        <div style={{ fontWeight: 900, fontSize: 14, marginBottom: 10 }}>Trabajo</div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-            gap: 12,
-          }}
-        >
-          {cardButton("/cases/mine", "Mis causas", "Causas donde participo o que creé")}
-          {cardButton(
-            "/invites",
-            "Mis invitaciones",
-            pendingInvites > 0 ? `Tenés ${pendingInvites} pendientes` : "No tenés pendientes",
-            pendingInvites > 0 ? "PENDIENTES" : undefined
-          )}
-          {cardButton("/cases/new", "Agregar nueva causa", "Cargar una causa y enviar invitaciones")}
-          {cardButton("/specialties", "Mis especialidades", "Ver tus especialidades")}
-        </div>
-      </div>
-
-      {/* Panel admin (solo si role=admin) */}
-      {isAdmin && (
-        <div style={{ marginTop: 22 }}>
-          <div style={{ fontWeight: 900, fontSize: 14, marginBottom: 10 }}>Administración</div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-              gap: 12,
-            }}
-          >
-            {cardButton("/admin/lawyers", "Administrar abogados", "Crear/editar abogados, estado y especialidades", "ADMIN")}
-            {cardButton("/admin/specialties", "Administrar especialidades", "Crear/editar/activar especialidades", "ADMIN")}
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 18, fontSize: 13, opacity: 0.8 }}>
-        Tip: guardá esta página como favorito: <b>/dashboard</b>
-      </div>
-    </main>
+        </>
+      ) : null}
+    </AppShell>
   );
 }

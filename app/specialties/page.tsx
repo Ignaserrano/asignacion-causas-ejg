@@ -1,15 +1,32 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
+import {
+  collectionGroup,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from "firebase/firestore";
+
 import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
 type MySpec = { id: string; name: string };
 
 export default function MySpecialtiesPage() {
   const router = useRouter();
+
+  // shell
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // page
   const [msg, setMsg] = useState<string | null>(null);
   const [list, setList] = useState<MySpec[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,8 +38,31 @@ export default function MySpecialtiesPage() {
         return;
       }
 
+      setUser(u);
       setLoading(true);
       setMsg(null);
+
+      // rol
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
+      }
+
+      // pending invites para tabs
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
 
       try {
         // 1) leer ids desde el perfil
@@ -32,7 +72,7 @@ export default function MySpecialtiesPage() {
 
         if (ids.length === 0) {
           setList([]);
-          setMsg("Tus especialidades: (vacío)");
+          setMsg(null);
           return;
         }
 
@@ -46,7 +86,6 @@ export default function MySpecialtiesPage() {
           })
         );
 
-        // opcional: ordenar alfabéticamente por nombre
         resolved.sort((a, b) => a.name.localeCompare(b.name));
 
         setList(resolved);
@@ -61,50 +100,69 @@ export default function MySpecialtiesPage() {
     return () => unsub();
   }, [router]);
 
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
+  }
+
   return (
-    <main style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontWeight: 900 }}>Mis especialidades</h1>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <a href="/dashboard" style={{ textDecoration: "none", fontWeight: 700 }}>
+    <AppShell
+      title="Mis especialidades"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-black/70">
+          Estas son las especialidades que tenés asignadas en tu perfil.
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/dashboard"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
             ← Volver al inicio
-          </a>
-          <a href="/cases/mine" style={{ textDecoration: "none" }}>
+          </Link>
+          <Link
+            href="/cases/mine"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+          >
             Mis causas →
-          </a>
+          </Link>
         </div>
       </div>
 
-      {msg && <div style={{ marginTop: 16, opacity: 0.9 }}>⚠️ {msg}</div>}
+      {msg ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          ⚠️ {msg}
+        </div>
+      ) : null}
 
       {loading ? (
-        <div style={{ marginTop: 16, opacity: 0.85 }}>Cargando...</div>
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          Cargando...
+        </div>
       ) : list.length === 0 ? (
-        <div style={{ marginTop: 16, opacity: 0.85 }}>No tenés especialidades asignadas.</div>
+        <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-black/70">
+          No tenés especialidades asignadas.
+        </div>
       ) : (
-        <div style={{ marginTop: 16, border: "1px solid #ddd" }}>
+        <div className="grid gap-3">
           {list.map((s) => (
-            <div
-              key={s.id}
-              style={{
-                padding: 12,
-                borderTop: "1px solid #eee",
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 12,
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ fontWeight: 900 }}>{s.name}</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>{s.id}</div>
+            <div key={s.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="font-black">{s.name}</div>
+                <div className="text-xs font-semibold text-black/60">{s.id}</div>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      <div style={{ marginTop: 16, fontSize: 13, opacity: 0.75 }}>
+      <div className="mt-6 text-xs text-black/60">
         (Más adelante podemos permitir edición si corresponde.)
       </div>
-    </main>
+    </AppShell>
   );
 }

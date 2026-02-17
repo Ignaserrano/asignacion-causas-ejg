@@ -1,19 +1,23 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
   orderBy,
   query,
+  where,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 import { auth, db, functions } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
 
 type Specialty = { id: string; name: string; active?: boolean };
 type UserRow = {
@@ -25,20 +29,10 @@ type UserRow = {
   missingProfile?: boolean;
 };
 
-function chip(text: string) {
+function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 999,
-        border: "1px solid #ddd",
-        fontSize: 12,
-        fontWeight: 900,
-        background: "#f8f9fa",
-      }}
-    >
-      {text}
+    <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-black">
+      {children}
     </span>
   );
 }
@@ -46,6 +40,12 @@ function chip(text: string) {
 export default function AdminLawyersPage() {
   const router = useRouter();
 
+  // shell
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  // page
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -88,8 +88,8 @@ export default function AdminLawyersPage() {
 
   async function ensureAdminOrRedirect(uid: string) {
     const snap = await getDoc(doc(db, "users", uid));
-    const role = String((snap.data() as any)?.role ?? "lawyer");
-    if (role !== "admin") router.replace("/dashboard");
+    const r = String((snap.data() as any)?.role ?? "lawyer");
+    if (r !== "admin") router.replace("/dashboard");
   }
 
   async function loadAll() {
@@ -97,10 +97,8 @@ export default function AdminLawyersPage() {
     setMsg(null);
 
     try {
-      // specialties (para mostrar por nombre y checkboxes)
-      const spSnap = await getDocs(
-        query(collection(db, "specialties"), orderBy("name", "asc"))
-      );
+      // specialties
+      const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
       const spList: Specialty[] = spSnap.docs.map((d) => ({
         id: d.id,
         name: String((d.data() as any)?.name ?? d.id),
@@ -108,59 +106,52 @@ export default function AdminLawyersPage() {
       }));
       setSpecialties(spList);
 
-      // users
-      const uSnap = await getDocs(
-        query(collection(db, "users"), orderBy("email", "asc"))
-      );
+      // perfiles en Firestore
+      const uSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
 
-  const profileRows: UserRow[] = uSnap.docs.map((d) => {
-  const data = d.data() as any;
-  const roleRaw = String(data?.role ?? "lawyer");
-  const role = roleRaw === "abogado" ? "lawyer" : roleRaw; // compat viejo
+      const profileRows: UserRow[] = uSnap.docs.map((d) => {
+        const data = d.data() as any;
+        const roleRaw = String(data?.role ?? "lawyer");
+        const role = roleRaw === "abogado" ? "lawyer" : roleRaw; // compat viejo
 
-  return {
-    uid: d.id,
-    email: String(data?.email ?? d.id).toLowerCase(),
-    role,
-    isPracticing: !!data?.isPracticing,
-    specialties: Array.isArray(data?.specialties) ? data.specialties : [],
-  };
-});
+        return {
+          uid: d.id,
+          email: String(data?.email ?? d.id).toLowerCase(),
+          role,
+          isPracticing: !!data?.isPracticing,
+          specialties: Array.isArray(data?.specialties) ? data.specialties : [],
+        };
+      });
 
-// Map por uid de perfiles existentes
-const profileByUid = new Map(profileRows.map((r) => [r.uid, r]));
+      const profileByUid = new Map(profileRows.map((r) => [r.uid, r]));
 
-// Traer usuarios de Auth (para incluir los que no tienen perfil)
-const listFn = httpsCallable(functions, "adminListAuthUsers");
-const authRes = (await listFn({})) as any;
-const authUsers: Array<{ uid: string; email: string }> = authRes?.data?.users ?? [];
+      // usuarios de Auth (para incluir sin perfil)
+      const listFn = httpsCallable(functions, "adminListAuthUsers");
+      const authRes = (await listFn({})) as any;
+      const authUsers: Array<{ uid: string; email: string }> = authRes?.data?.users ?? [];
 
-// Unir: si está en Firestore, usamos ese.
-// Si está en Auth pero no en Firestore, lo mostramos igual con defaults.
-const merged: UserRow[] = authUsers.map((u) => {
-  const existing = profileByUid.get(u.uid);
-  if (existing) return existing;
+      const merged: UserRow[] = authUsers.map((u) => {
+        const existing = profileByUid.get(u.uid);
+        if (existing) return existing;
 
-  return {
-    uid: u.uid,
-    email: u.email,
-    role: "lawyer",
-    isPracticing: true,
-    specialties: [],
-  };
-});
+        return {
+          uid: u.uid,
+          email: String(u.email ?? "").toLowerCase(),
+          role: "lawyer",
+          isPracticing: true,
+          specialties: [],
+          missingProfile: true,
+        };
+      });
 
-// Además, por si hay perfiles sin email (raros), sumamos los que no estén en Auth
-for (const r of profileRows) {
-  if (!merged.find((x) => x.uid === r.uid)) merged.push(r);
-}
+      for (const r of profileRows) {
+        if (!merged.find((x) => x.uid === r.uid)) merged.push(r);
+      }
 
-merged.sort((a, b) => a.email.localeCompare(b.email));
+      merged.sort((a, b) => a.email.localeCompare(b.email));
 
-// Si querés seguir filtrando solo abogados/admin:
-const finalRows = merged.filter((r) => r.role === "lawyer" || r.role === "admin");
-
-setUsers(finalRows);
+      const finalRows = merged.filter((r) => r.role === "lawyer" || r.role === "admin");
+      setUsers(finalRows);
     } catch (e: any) {
       setMsg(e?.message ?? "Error cargando abogados");
     } finally {
@@ -174,12 +165,43 @@ setUsers(finalRows);
         router.replace("/login");
         return;
       }
+
+      setUser(u);
+
+      // rol
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+      } catch {
+        setRole("lawyer");
+      }
+
+      // pending invites (badge tabs)
+      try {
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const snap = await getDocs(qPending);
+        setPendingInvites(snap.size);
+      } catch {
+        setPendingInvites(0);
+      }
+
       await ensureAdminOrRedirect(u.uid);
       await loadAll();
     });
+
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
+  }
 
   async function createLawyer() {
     setMsg(null);
@@ -286,87 +308,88 @@ setUsers(finalRows);
   }
 
   return (
-    <main style={{ maxWidth: 1100, margin: "40px auto", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontWeight: 900 }}>Administrar abogados</h1>
-        <a href="/dashboard" style={{ textDecoration: "none", fontWeight: 900 }}>
+    <AppShell
+      title="Administrar abogados"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-black/70">
+          Gestión de usuarios (Auth + perfiles en Firestore).
+        </div>
+        <Link
+          href="/dashboard"
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+        >
           ← Inicio
-        </a>
+        </Link>
       </div>
 
-      {msg && <div style={{ marginTop: 12 }}>⚠️ {msg}</div>}
-      {loading && <div style={{ marginTop: 12 }}>Cargando...</div>}
+      {msg ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+      ) : null}
+
+      {loading ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+      ) : null}
 
       {/* CREAR */}
-      <div style={{ marginTop: 16, border: "1px solid #ddd", padding: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 10 }}>Agregar nuevo abogado</div>
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="text-sm font-black">Agregar nuevo abogado</div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ fontSize: 13 }}>
-            Email{" "}
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="grid gap-2">
+            <span className="text-sm font-extrabold">Email</span>
             <input
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
               placeholder="abogado@estudio.com"
-              style={{ padding: 7, border: "1px solid #ddd", minWidth: 260 }}
+              className="min-w-[260px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
             />
           </label>
 
-          <label style={{ fontSize: 13 }}>
-            Password{" "}
+          <label className="grid gap-2">
+            <span className="text-sm font-extrabold">Password</span>
             <input
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder="mín. 6 caracteres"
-              style={{ padding: 7, border: "1px solid #ddd", minWidth: 220 }}
+              className="min-w-[220px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
             />
           </label>
 
-          <label style={{ fontSize: 13 }}>
-            Practicante{" "}
+          <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold">
             <input
               type="checkbox"
               checked={newIsPracticing}
               onChange={(e) => setNewIsPracticing(e.target.checked)}
-              style={{ marginLeft: 8 }}
+              className="h-4 w-4"
             />
+            Practicante
           </label>
 
           <button
             disabled={creating}
             onClick={createLawyer}
-            style={{
-              padding: "8px 12px",
-              border: "1px solid #ddd",
-              background: "white",
-              fontWeight: 900,
-              cursor: "pointer",
-            }}
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 disabled:opacity-60"
           >
             {creating ? "Creando..." : "Crear abogado"}
           </button>
         </div>
 
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
-            Especialidades
-          </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div className="mt-4">
+          <div className="mb-2 text-sm font-black">Especialidades</div>
+          <div className="flex flex-wrap gap-3">
             {activeSpecialties.map((s) => (
-              <label
-                key={s.id}
-                style={{
-                  fontSize: 13,
-                  display: "inline-flex",
-                  gap: 6,
-                  alignItems: "center",
-                }}
-              >
+              <label key={s.id} className="inline-flex items-center gap-2 text-sm font-semibold">
                 <input
                   type="checkbox"
                   checked={newSpecialties.includes(s.id)}
                   onChange={() => setNewSpecialties((prev) => toggle(prev, s.id))}
+                  className="h-4 w-4"
                 />
                 {s.name}
               </label>
@@ -376,181 +399,162 @@ setUsers(finalRows);
       </div>
 
       {/* LISTADO */}
-      <div style={{ marginTop: 16, border: "1px solid #ddd" }}>
-        <div style={{ padding: 12, fontWeight: 900 }}>
-          Abogados existentes ({users.length})
+      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-200 p-4">
+          <div className="text-sm font-black">Abogados existentes ({users.length})</div>
         </div>
 
         {users.length === 0 ? (
-          <div style={{ padding: 12, opacity: 0.8 }}>No hay abogados.</div>
+          <div className="p-4 text-sm text-black/70">No hay abogados.</div>
         ) : (
-          users.map((r) => {
-            const isEditing = editingUid === r.uid;
-const hasProfile = true; // lo calculamos con un lookup rápido
+          <div className="divide-y divide-gray-100">
+            {users.map((r) => {
+              const isEditing = editingUid === r.uid;
 
-            return (
-              <div
-                key={r.uid}
-                style={{ padding: 12, borderTop: "1px solid #eee", display: "grid", gap: 8 }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 900 }}>
-                    {r.email}{" "}
-                    <span style={{ fontWeight: 400, opacity: 0.6, fontSize: 12 }}>
-                      ({r.role === "admin" ? "admin" : "abogado"})
-                    </span>
-                  </div>
+              return (
+                <div key={r.uid} className="p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-[260px]">
+                      <div className="font-black">
+                        {r.email}{" "}
+                        <span className="text-xs font-normal text-black/60">
+                          ({r.role === "admin" ? "admin" : "abogado"})
+                        </span>
+                      </div>
 
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    {r.isPracticing ? chip("isPracticing: true") : chip("isPracticing: false")}
-
-                    <button
-                      onClick={() => startEdit(r)}
-                      style={{ padding: "6px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
-                    >
-                      Editar
-                    </button>
-
-                    <button
-                      onClick={() => openPassword(r.uid, r.email)}
-                      style={{ padding: "6px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
-                    >
-                      Cambiar password
-                    </button>
-
-                    <button
-                      onClick={() => deleteLawyer(r.uid, r.email)}
-                      style={{ padding: "6px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
-                    >
-                      Eliminar
-                    </button>
-                  </div>
-                </div>
-
-                {!isEditing ? (
-                  <div style={{ fontSize: 13, opacity: 0.9, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <span style={{ opacity: 0.8 }}>Especialidades:</span>
-                    {r.specialties.length === 0 ? (
-                      <span style={{ opacity: 0.8 }}>(sin especialidades)</span>
-                    ) : (
-                     r.specialties.map((sid) => (
-  <span key={sid}>{chip(specialtyNameById[sid] ?? sid)}</span>
-))
-
-                    )}
-                  </div>
-                ) : (
-                  <div style={{ border: "1px solid #eee", padding: 10, display: "grid", gap: 10 }}>
-                    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                      <label style={{ fontSize: 13 }}>
-                        Practicante{" "}
-                        <input
-                          type="checkbox"
-                          checked={editIsPracticing}
-                          onChange={(e) => setEditIsPracticing(e.target.checked)}
-                          style={{ marginLeft: 8 }}
-                        />
-                      </label>
-
-                      <button
-                        disabled={savingEdit}
-                        onClick={saveEdit}
-                        style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
-                      >
-                        {savingEdit ? "Guardando..." : "Guardar"}
-                      </button>
-
-                      <button
-                        disabled={savingEdit}
-                        onClick={() => setEditingUid(null)}
-                        style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
-                      >
-                        Cancelar
-                      </button>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Chip>isPracticing: {r.isPracticing ? "true" : "false"}</Chip>
+                        {r.missingProfile ? <Chip>sin perfil</Chip> : null}
+                      </div>
                     </div>
 
-                    <div style={{ fontSize: 13, fontWeight: 800 }}>Especialidades</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      {activeSpecialties.map((s) => (
-                        <label
-                          key={s.id}
-                          style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}
-                        >
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => startEdit(r)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                      >
+                        Editar
+                      </button>
+
+                      <button
+                        onClick={() => openPassword(r.uid, r.email)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                      >
+                        Cambiar password
+                      </button>
+
+                      <button
+                        onClick={() => deleteLawyer(r.uid, r.email)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </div>
+
+                  {!isEditing ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-extrabold text-black/70">Especialidades:</span>
+                      {r.specialties.length === 0 ? (
+                        <span className="text-black/60">(sin especialidades)</span>
+                      ) : (
+                        r.specialties.map((sid) => (
+                          <Chip key={sid}>{specialtyNameById[sid] ?? sid}</Chip>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold">
                           <input
                             type="checkbox"
-                            checked={editSpecialties.includes(s.id)}
-                            onChange={() => setEditSpecialties((prev) => toggle(prev, s.id))}
+                            checked={editIsPracticing}
+                            onChange={(e) => setEditIsPracticing(e.target.checked)}
+                            className="h-4 w-4"
                           />
-                          {s.name}
+                          Practicante
                         </label>
-                      ))}
+
+                        <button
+                          disabled={savingEdit}
+                          onClick={saveEdit}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+                        >
+                          {savingEdit ? "Guardando..." : "Guardar"}
+                        </button>
+
+                        <button
+                          disabled={savingEdit}
+                          onClick={() => setEditingUid(null)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+
+                      <div className="mt-4 text-sm font-black">Especialidades</div>
+                      <div className="mt-2 flex flex-wrap gap-3">
+                        {activeSpecialties.map((s) => (
+                          <label key={s.id} className="inline-flex items-center gap-2 text-sm font-semibold">
+                            <input
+                              type="checkbox"
+                              checked={editSpecialties.includes(s.id)}
+                              onChange={() => setEditSpecialties((prev) => toggle(prev, s.id))}
+                              className="h-4 w-4"
+                            />
+                            {s.name}
+                          </label>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 
       {/* MODAL PASSWORD */}
-      {pwUid && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.25)",
-            display: "grid",
-            placeItems: "center",
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              background: "white",
-              border: "1px solid #ddd",
-              padding: 14,
-              width: "min(520px, 100%)",
-            }}
-          >
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>
-              Cambiar password — {pwEmail}
-            </div>
+      {pwUid ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-4 shadow-lg">
+            <div className="text-sm font-black">Cambiar password — {pwEmail}</div>
 
-            <label style={{ fontSize: 13 }}>
-              Nueva password{" "}
+            <label className="mt-3 grid gap-2">
+              <span className="text-sm font-extrabold">Nueva password</span>
               <input
                 type="password"
                 value={pwValue}
                 onChange={(e) => setPwValue(e.target.value)}
                 placeholder="mín. 6 caracteres"
-                style={{ padding: 7, border: "1px solid #ddd", width: "100%", marginTop: 6 }}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold"
               />
             </label>
 
-            <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <div className="mt-4 flex justify-end gap-2">
               <button
                 disabled={savingPw}
                 onClick={() => setPwUid(null)}
-                style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
               >
                 Cancelar
               </button>
+
               <button
                 disabled={savingPw}
                 onClick={savePassword}
-                style={{ padding: "7px 10px", border: "1px solid #ddd", background: "white", fontWeight: 900, cursor: "pointer" }}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60"
               >
                 {savingPw ? "Guardando..." : "Guardar password"}
               </button>
             </div>
 
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-              Nota: la contraseña se cambia en Firebase Auth.
-            </div>
+            <div className="mt-2 text-xs text-black/60">Nota: la contraseña se cambia en Firebase Auth.</div>
           </div>
         </div>
-      )}
-    </main>
+      ) : null}
+    </AppShell>
   );
 }
