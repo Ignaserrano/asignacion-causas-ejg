@@ -4,11 +4,16 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import { collectionGroup, doc, getDoc, getDocs, query, where } from "firebase/firestore";
-
-import { auth, db } from "@/lib/firebase";
-import AppShell from "@/components/AppShell";
 import { httpsCallable } from "firebase/functions";
-import { functions } from "@/lib/firebase";
+
+import { auth, db, functions } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
+import {
+  IconCases,
+  IconInvites,
+  IconNewCase,
+  IconSpecialties,
+} from "@/components/DashboardIcons";
 
 async function exportExcel() {
   const fn = httpsCallable(functions, "adminExportCasesExcel");
@@ -27,11 +32,13 @@ function CardLink({
   title,
   subtitle,
   tag,
+  icon,
 }: {
   href: string;
   title: string;
   subtitle?: string;
   tag?: string;
+  icon?: React.ReactNode;
 }) {
   return (
     <a
@@ -39,25 +46,37 @@ function CardLink({
       className="group rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:shadow-md
                  dark:border-gray-800 dark:bg-gray-900"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
 
-        {tag ? (
-          <span
-            className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
-                       dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            {tag ? (
+              <span
+                className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
+                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                {tag}
+              </span>
+            ) : null}
+          </div>
+
+          {subtitle ? (
+            <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">{subtitle}</div>
+          ) : null}
+        </div>
+
+        {/* Icono a la derecha del texto */}
+        {icon ? (
+          <div
+            className="shrink-0 rounded-xl border border-gray-200 bg-gray-50 p-2 text-gray-700 transition
+                       group-hover:bg-gray-100 group-hover:text-gray-900
+                       dark:border-gray-800 dark:bg-gray-800 dark:text-gray-200 dark:group-hover:bg-gray-700 dark:group-hover:text-white"
+            aria-hidden="true"
           >
-            {tag}
-          </span>
+            {icon}
+          </div>
         ) : null}
-      </div>
-
-      {subtitle ? (
-        <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">{subtitle}</div>
-      ) : null}
-
-      <div className="mt-3 text-sm font-extrabold text-gray-600 group-hover:text-gray-900 dark:text-gray-300 dark:group-hover:text-gray-100">
-        Abrir →
       </div>
     </a>
   );
@@ -135,15 +154,31 @@ export default function DashboardPage() {
 
       <div className="text-sm font-black text-gray-900 dark:text-gray-100">Trabajo</div>
       <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
-        <CardLink href="/cases/mine" title="Mis causas" subtitle="Causas donde participo o que creé" />
+        <CardLink
+          href="/cases/mine"
+          title="Mis causas"
+          subtitle="Causas donde participo o que creé"
+          icon={<IconCases className="h-5 w-5" />}
+        />
         <CardLink
           href="/invites"
           title="Mis invitaciones"
           subtitle={pendingInvites > 0 ? `Tenés ${pendingInvites} pendientes` : "No tenés pendientes"}
           tag={pendingInvites > 0 ? "PENDIENTES" : undefined}
+          icon={<IconInvites className="h-5 w-5" />}
         />
-        <CardLink href="/cases/new" title="Agregar nueva causa" subtitle="Cargar una causa y enviar invitaciones" />
-        <CardLink href="/specialties" title="Mis especialidades" subtitle="Ver tus especialidades" />
+        <CardLink
+          href="/cases/new"
+          title="Agregar nueva causa"
+          subtitle="Cargar una causa y enviar invitaciones"
+          icon={<IconNewCase className="h-5 w-5" />}
+        />
+        <CardLink
+          href="/specialties"
+          title="Mis especialidades"
+          subtitle="Ver tus especialidades"
+          icon={<IconSpecialties className="h-5 w-5" />}
+        />
       </div>
 
       {isAdmin ? (

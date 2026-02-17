@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import PushNotificationsClient from "@/components/PushNotificationsClient";
+import InstallButton from "@/components/InstallButton";
 
 function Badge({
   children,
@@ -77,7 +78,11 @@ export default function AppShell({
 
       {/* Top bar */}
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
+        
+
+        
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+          
           <div className="min-w-[180px]">
             <div className="text-base font-black text-gray-900 dark:text-gray-100">
               {title}
@@ -100,14 +105,18 @@ export default function AppShell({
             </div>
           </div>
 
-          {onLogout ? (
-            <button
-              onClick={onLogout}
-              className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
-            >
-              Cerrar sesión
-            </button>
-          ) : null}
+          <div className="flex items-center gap-2">
+  <InstallButton />
+
+  {onLogout ? (
+    <button
+      onClick={onLogout}
+      className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+    >
+      Cerrar sesión
+    </button>
+  ) : null}
+</div>
         </div>
       </header>
 
