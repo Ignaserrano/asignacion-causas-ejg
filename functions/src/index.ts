@@ -29,6 +29,43 @@ async function assertAdmin(request: any) {
 }
 
 /* =========================================================
+   PUSH HELPERS (FCM)
+   ========================================================= */
+
+// Lee tokens desde: users/{uid}/fcmTokens/{tokenDocId}
+// (Recomendado: usar el token como docId)
+async function getUserTokens(uid: string): Promise<string[]> {
+  const snap = await admin.firestore().collection(`users/${uid}/fcmTokens`).get();
+  return snap.docs.map((d) => d.id);
+}
+
+// Envía push y limpia tokens inválidos (best-effort)
+async function notifyUid(uid: string, title: string, body: string, data?: Record<string, string>) {
+  const tokens = await getUserTokens(uid);
+  if (!tokens.length) return;
+
+  const res = await admin.messaging().sendEachForMulticast({
+    tokens,
+    notification: { title, body },
+    data: data ?? {},
+  });
+
+  const batch = admin.firestore().batch();
+  res.responses.forEach((r, idx) => {
+    if (!r.success) {
+      const code = (r.error as any)?.code || "";
+      if (
+        code.includes("registration-token-not-registered") ||
+        code.includes("invalid-argument")
+      ) {
+        batch.delete(admin.firestore().doc(`users/${uid}/fcmTokens/${tokens[idx]}`));
+      }
+    }
+  });
+  await batch.commit();
+}
+
+/* =========================================================
    CREATE CASE + INVITES
    ========================================================= */
 
@@ -209,6 +246,22 @@ export const createCaseWithInvites = onCall(async (request) => {
     }
   });
 
+  // ======================
+  // PUSH a invitados (best-effort)
+  // ======================
+  for (const invitedUid of inviteUids) {
+    try {
+      await notifyUid(
+        invitedUid,
+        "Nueva invitación",
+        `Te invitaron a una causa: ${caratulaTentativa}`,
+        { caseId: caseRef.id }
+      );
+    } catch (e) {
+      console.error("Push invite error:", e);
+    }
+  }
+
   return { caseId: caseRef.id };
 });
 
@@ -240,6 +293,11 @@ export const respondInvite = onCall(
       const caseRef = admin.firestore().collection("cases").doc(caseId);
       const inviteRef = caseRef.collection("invites").doc(inviteId);
 
+      // Para notificaciones push fuera de la transacción
+      let creatorUidToNotify = "";
+      let caratulaToNotify = caseId;
+      let nextUidToNotify: string | null = null;
+
       await admin.firestore().runTransaction(async (tx) => {
         // ===== 1) READS (todo antes de escribir)
         const [caseSnap, inviteSnap] = await Promise.all([tx.get(caseRef), tx.get(inviteRef)]);
@@ -251,6 +309,9 @@ export const respondInvite = onCall(
         if (String(invite.status ?? "") !== "pending") throw new HttpsError("failed-precondition", "Invitación ya respondida.");
 
         const c = caseSnap.data() as any;
+
+        creatorUidToNotify = String(c.broughtByUid ?? "");
+        caratulaToNotify = String(c.caratulaTentativa ?? caseId);
 
         const assignmentMode: "auto" | "direct" = (c.assignmentMode ?? "auto") as any;
         const specialtyId: string = String(c.specialtyId ?? "");
@@ -357,19 +418,49 @@ export const respondInvite = onCall(
             createdByUid: broughtByUid,
           });
 
+          // para push al nuevo invitado fuera de la transacción
+          nextUidToNotify = nextUid;
+
           tx.set(rotRef, { cursor: nextCursor, updatedAt: now }, { merge: true });
           tx.update(caseRef, { status: "draft" });
         }
       });
 
       // ======================
+      // PUSH (best-effort)
+      // ======================
+      try {
+        if (creatorUidToNotify) {
+          await notifyUid(
+            creatorUidToNotify,
+            `Invitación ${decision === "accepted" ? "aceptada" : "rechazada"}`,
+            `Respondieron ${decision} para: ${caratulaToNotify}`,
+            { caseId }
+          );
+        }
+      } catch (e) {
+        console.error("Push creator error:", e);
+      }
+
+      try {
+        if (nextUidToNotify) {
+          await notifyUid(
+            nextUidToNotify,
+            "Nueva invitación",
+            `Te invitaron a una causa: ${caratulaToNotify}`,
+            { caseId }
+          );
+        }
+      } catch (e) {
+        console.error("Push reinvite error:", e);
+      }
+
+      // ======================
       // Email al creador (best-effort)
       // ======================
-      const caseSnapEmail = await admin.firestore().collection("cases").doc(caseId).get();
-      const caseDataEmail = caseSnapEmail.data() as any;
-
-      const creatorUidEmail = String(caseDataEmail?.broughtByUid ?? "");
-      const caratulaEmail = String(caseDataEmail?.caratulaTentativa ?? caseId);
+      // Reutilizamos datos ya capturados cuando posible
+      const creatorUidEmail = creatorUidToNotify || String((await caseRef.get()).data()?.broughtByUid ?? "");
+      const caratulaEmail = caratulaToNotify || caseId;
 
       let creatorEmail = "";
       if (creatorUidEmail) {
