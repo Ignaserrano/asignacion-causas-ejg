@@ -307,25 +307,7 @@ export default function CaseDetailPage() {
 
         {/* 👇 Botonera (no se imprime) */}
         <div className="no-print flex flex-wrap items-center gap-2">
-          <Link
-            href="/cases"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            ← Volver a todas
-          </Link>
-          <Link
-            href="/cases/mine"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            Mis causas →
-          </Link>
-          <Link
-            href="/invites"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            Mis invitaciones →
-          </Link>
-
+         
           <button
             onClick={copyLink}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"

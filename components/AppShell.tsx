@@ -73,7 +73,10 @@ export default function AppShell({
     : [];
 
   return (
-    <div className="min-h-dvh bg-white">
+  
+       
+  <div className="min-h-dvh bg-white">
+    <PushNotificationsClient />
       {/* Top bar */}
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
@@ -95,7 +98,7 @@ export default function AppShell({
             </div>
           </div>
 
-          {onLogout ? (
+            {onLogout ? (
             <button
               onClick={onLogout}
               className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow"
@@ -152,7 +155,12 @@ export default function AppShell({
             Tip: guardá <span className="font-bold">/dashboard</span> como favorito.
           </div>
         </main>
+
+        
       </div>
+      
     </div>
+
+    
   );
 }
