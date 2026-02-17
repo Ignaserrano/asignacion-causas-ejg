@@ -426,7 +426,7 @@ cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<Doc
               <option value="nacional">Nacional</option>
               <option value="federal">Federal</option>
               <option value="caba">CABA</option>
-              <option value="provincia">Provincia Bs. As.</option>
+              <option value="provincia_bs_as">Provincia Bs. As.</option>
             </select>
           </label>
 
