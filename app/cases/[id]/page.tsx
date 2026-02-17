@@ -63,7 +63,9 @@ function Badge({
       : "bg-gray-100 border-gray-300";
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-black ${cls}`}
+    >
       {children}
     </span>
   );
@@ -149,7 +151,10 @@ export default function CaseDetailPage() {
       const unsubInv = onSnapshot(
         qInv,
         (snap) => {
-          const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as any;
+          const list = snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as any),
+          })) as any;
           setInvites(list);
         },
         (err) => setMsg(err.message)
@@ -164,7 +169,7 @@ export default function CaseDetailPage() {
     return () => unsubAuth();
   }, [router, caseId]);
 
-  // cargar emails faltantes (confirmados + invitados)
+  // cargar emails faltantes (confirmados + invitados + creador)
   useEffect(() => {
     const uids = new Set<string>();
 
@@ -172,6 +177,9 @@ export default function CaseDetailPage() {
     invites.forEach((i) => {
       if (i.invitedUid) uids.add(i.invitedUid);
     });
+
+    // 👇 NUEVO: creador
+    if (c?.broughtByUid) uids.add(c.broughtByUid);
 
     const missing = Array.from(uids).filter((uid) => uid && !emailByUid[uid]);
     if (missing.length === 0) return;
@@ -185,12 +193,12 @@ export default function CaseDetailPage() {
             const userSnap = await getDoc(doc(db, "users", uid));
             if (userSnap.exists()) {
               const u = userSnap.data() as UserDoc;
-              newMap[uid] = u.email ? String(u.email) : uid;
+              newMap[uid] = u.email ? String(u.email) : "";
             } else {
-              newMap[uid] = uid;
+              newMap[uid] = "";
             }
           } catch {
-            newMap[uid] = uid;
+            newMap[uid] = "";
           }
         })
       );
@@ -198,7 +206,7 @@ export default function CaseDetailPage() {
       setEmailByUid(newMap);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c?.confirmedAssigneesUids, invites]);
+  }, [c?.confirmedAssigneesUids, c?.broughtByUid, invites]);
 
   const required = Number(c?.requiredAssigneesCount ?? 2);
   const confirmedCount = (c?.confirmedAssigneesUids ?? []).length;
@@ -218,7 +226,9 @@ export default function CaseDetailPage() {
   }
 
   function getShareText() {
-    const t = c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa";
+    const t = c?.caratulaTentativa
+      ? `Causa: ${c.caratulaTentativa}`
+      : "Detalle de causa";
     const url = getShareUrl();
     return `${t}\n${url}`;
   }
@@ -237,7 +247,6 @@ export default function CaseDetailPage() {
   function shareWhatsApp() {
     if (!caseId) return;
     const text = encodeURIComponent(getShareText());
-    // wa.me funciona en mobile y desktop (redirige a WhatsApp Web si corresponde)
     window.open(`https://wa.me/?text=${text}`, "_blank", "noopener,noreferrer");
   }
 
@@ -245,7 +254,9 @@ export default function CaseDetailPage() {
     if (!caseId) return;
 
     const subject = encodeURIComponent(
-      c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"
+      c?.caratulaTentativa
+        ? `Causa: ${c.caratulaTentativa}`
+        : "Detalle de causa"
     );
 
     const body = encodeURIComponent(getShareText());
@@ -254,7 +265,6 @@ export default function CaseDetailPage() {
   }
 
   function printPdf() {
-    // El usuario elige "Guardar como PDF" en el diálogo de impresión
     window.print();
   }
 
@@ -265,8 +275,16 @@ export default function CaseDetailPage() {
 
   if (!caseId) {
     return (
-      <AppShell title="Causa" userEmail={user?.email ?? null} role={role} pendingInvites={pendingInvites} onLogout={doLogout}>
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">ID inválido.</div>
+      <AppShell
+        title="Causa"
+        userEmail={user?.email ?? null}
+        role={role}
+        pendingInvites={pendingInvites}
+        onLogout={doLogout}
+      >
+        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          ID inválido.
+        </div>
       </AppShell>
     );
   }
@@ -281,7 +299,7 @@ export default function CaseDetailPage() {
       pendingInvites={pendingInvites}
       onLogout={doLogout}
     >
-      {/* Estilos de impresión: oculta botones/links y ajusta márgenes */}
+      {/* Estilos de impresión */}
       <style jsx global>{`
         @media print {
           .no-print {
@@ -305,9 +323,8 @@ export default function CaseDetailPage() {
           <div className="mt-1 text-xs text-black/60">#{caseId}</div>
         </div>
 
-        {/* 👇 Botonera (no se imprime) */}
+        {/* Botonera */}
         <div className="no-print flex flex-wrap items-center gap-2">
-         
           <button
             onClick={copyLink}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
@@ -342,11 +359,15 @@ export default function CaseDetailPage() {
       </div>
 
       {msg ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">⚠️ {msg}</div>
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          ⚠️ {msg}
+        </div>
       ) : null}
 
       {loading ? (
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">Cargando...</div>
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm">
+          Cargando...
+        </div>
       ) : null}
 
       {!loading && !c ? (
@@ -361,11 +382,17 @@ export default function CaseDetailPage() {
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
-                {status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>DRAFT</Badge>}
+                {status === "assigned" ? (
+                  <Badge tone="ok">ASIGNADA</Badge>
+                ) : (
+                  <Badge>DRAFT</Badge>
+                )}
 
                 {missingCount > 0 ? (
                   <div className="text-sm text-black/70">
-                    Faltan <span className="font-black">{missingCount}</span> confirmaciones ({confirmedCount}/{required})
+                    Faltan{" "}
+                    <span className="font-black">{missingCount}</span>{" "}
+                    confirmaciones ({confirmedCount}/{required})
                   </div>
                 ) : (
                   <div className="text-sm text-black/70">
@@ -373,14 +400,18 @@ export default function CaseDetailPage() {
                   </div>
                 )}
 
-                {c.assignmentMode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : null}
+                {c.assignmentMode === "direct" ? (
+                  <Badge tone="warn">DIRECTA</Badge>
+                ) : null}
                 {c.assignmentMode === "auto" ? <Badge>AUTOMÁTICA</Badge> : null}
               </div>
 
               <div className="text-sm text-black/70">
-                Invites: <span className="font-black">{inviteStats.pending}</span> pend ·{" "}
-                <span className="font-black">{inviteStats.accepted}</span> acep ·{" "}
-                <span className="font-black">{inviteStats.rejected}</span> rech
+                Invites:{" "}
+                <span className="font-black">{inviteStats.pending}</span>{" "}
+                pend · <span className="font-black">{inviteStats.accepted}</span>{" "}
+                acep · <span className="font-black">{inviteStats.rejected}</span>{" "}
+                rech
               </div>
             </div>
           </div>
@@ -389,14 +420,30 @@ export default function CaseDetailPage() {
           <SectionTitle>Datos</SectionTitle>
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="grid gap-3 text-sm">
+              {/* 👇 NUEVO: Creado por (solo email, nunca UID) */}
+              <div>
+                <span className="font-black">Creado por:</span>{" "}
+                <span className="text-black/80">
+                  {c.broughtByUid
+                    ? emailByUid[c.broughtByUid]
+                      ? `${emailByUid[c.broughtByUid]}${
+                          user?.uid === c.broughtByUid ? " (vos)" : ""
+                        }`
+                      : "Cargando..."
+                    : "-"}
+                </span>
+              </div>
+
               <div>
                 <span className="font-black">Jurisdicción:</span>{" "}
                 <span className="text-black/80">{c.jurisdiccion ?? "-"}</span>
               </div>
+
               <div>
                 <span className="font-black">Objeto:</span>{" "}
                 <span className="text-black/80">{c.objeto ?? "-"}</span>
               </div>
+
               <div>
                 <span className="font-black">Resumen:</span>{" "}
                 <span className="text-black/80">{c.resumen ?? "-"}</span>
@@ -404,23 +451,27 @@ export default function CaseDetailPage() {
 
               {c.assignmentMode === "direct" && c.directJustification ? (
                 <div className="rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm">
-                  <span className="font-black">Justificación (directa):</span> {c.directJustification}
+                  <span className="font-black">Justificación (directa):</span>{" "}
+                  {c.directJustification}
                 </div>
               ) : null}
             </div>
           </div>
 
           {/* Confirmados */}
-          <SectionTitle>Confirmados ({confirmedCount}/{required})</SectionTitle>
+          <SectionTitle>
+            Confirmados ({confirmedCount}/{required})
+          </SectionTitle>
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
             {confirmedCount === 0 ? (
-              <div className="text-sm text-black/70">Todavía no hay confirmados.</div>
+              <div className="text-sm text-black/70">
+                Todavía no hay confirmados.
+              </div>
             ) : (
               <ul className="ml-5 list-disc text-sm">
                 {(c.confirmedAssigneesUids ?? []).map((u) => (
                   <li key={u} className="my-2">
-                    <span className="font-black">{emailByUid[u] ?? u}</span>{" "}
-                    <span className="text-xs text-black/60">({u})</span>
+                    <span className="font-black">{emailByUid[u] ?? "Cargando..."}</span>
                   </li>
                 ))}
               </ul>
@@ -440,21 +491,24 @@ export default function CaseDetailPage() {
                 const emailShown =
                   i.invitedEmail ||
                   (uidShown ? emailByUid[uidShown] : "") ||
-                  uidShown ||
-                  "(sin email)";
+                  "(Cargando...)";
 
                 return (
-                  <div key={i.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <div
+                    key={i.id}
+                    className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-[240px]">
-                        <div className="font-extrabold">
-                          {emailShown}{" "}
-                          {uidShown ? <span className="text-xs font-normal text-black/60">({uidShown})</span> : null}
-                        </div>
+                        <div className="font-extrabold">{emailShown}</div>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : <Badge>AUTOMÁTICA</Badge>}
+                        {i.mode === "direct" ? (
+                          <Badge tone="warn">DIRECTA</Badge>
+                        ) : (
+                          <Badge>AUTOMÁTICA</Badge>
+                        )}
                         {i.status === "pending" ? (
                           <Badge>PENDIENTE</Badge>
                         ) : i.status === "accepted" ? (
@@ -467,7 +521,8 @@ export default function CaseDetailPage() {
 
                     {i.mode === "direct" && i.directJustification ? (
                       <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm">
-                        <span className="font-black">Justificación:</span> {i.directJustification}
+                        <span className="font-black">Justificación:</span>{" "}
+                        {i.directJustification}
                       </div>
                     ) : null}
                   </div>
