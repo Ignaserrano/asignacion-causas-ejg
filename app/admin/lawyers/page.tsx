@@ -319,12 +319,7 @@ export default function AdminLawyersPage() {
         <div className="text-sm text-black/70">
           Gestión de usuarios (Auth + perfiles en Firestore).
         </div>
-        <Link
-          href="/dashboard"
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-        >
-          ← Inicio
-        </Link>
+
       </div>
 
       {msg ? (

@@ -117,20 +117,7 @@ export default function MySpecialtiesPage() {
         <div className="text-sm text-black/70">
           Estas son las especialidades que tenés asignadas en tu perfil.
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/dashboard"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            ← Volver al inicio
-          </Link>
-          <Link
-            href="/cases/mine"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            Mis causas →
-          </Link>
-        </div>
+  
       </div>
 
       {msg ? (

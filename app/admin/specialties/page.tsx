@@ -190,12 +190,7 @@ export default function AdminSpecialtiesPage() {
           <span className="font-black">Especialidades</span> disponibles para asignación.
         </div>
 
-        <Link
-          href="/dashboard"
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-        >
-          ← Volver al dashboard
-        </Link>
+
       </div>
 
       {msg ? (

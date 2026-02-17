@@ -31,6 +31,8 @@ type Tab = {
   badge?: React.ReactNode;
 };
 
+import PushNotificationsClient from "@/components/PushNotificationsClient";
+
 export default function AppShell({
   title,
   subtitle,
@@ -52,7 +54,7 @@ export default function AppShell({
   const invitesCount = pendingInvites ?? 0;
 
   const tabs: Tab[] = [
-    { href: "/dashboard", label: "Dashboard" },
+    { href: "/dashboard", label: "Inicio" },
     { href: "/cases/mine", label: "Mis causas" },
     {
       href: "/invites",

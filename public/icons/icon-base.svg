@@ -1,0 +1,17 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="96" fill="#0f172a"/>
+  
+  <!-- Carpeta -->
+  <path d="M96 192h128l32 32h160v160H96z" fill="#1e293b"/>
+  
+  <!-- Balanza -->
+  <g fill="#ffffff">
+    <rect x="248" y="168" width="16" height="128"/>
+    <rect x="208" y="168" width="96" height="12"/>
+    <circle cx="208" cy="240" r="24"/>
+    <circle cx="304" cy="240" r="24"/>
+  </g>
+
+  <!-- Check -->
+  <path d="M192 320l40 40 88-96" stroke="#22c55e" stroke-width="24" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

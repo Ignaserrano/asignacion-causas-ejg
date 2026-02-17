@@ -403,12 +403,7 @@ export default function CasesAllPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Link
-            href="/cases/new"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"
-          >
-            + Nueva causa
-          </Link>
+       
           <Link
             href="/cases/mine"
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50"

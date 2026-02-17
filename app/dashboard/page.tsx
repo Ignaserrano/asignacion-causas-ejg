@@ -90,7 +90,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell
-      title="Dashboard"
+      title="Inicio"
       userEmail={user?.email ?? null}
       role={role}
       pendingInvites={pendingInvites}
