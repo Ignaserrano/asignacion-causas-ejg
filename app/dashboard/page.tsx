@@ -7,6 +7,20 @@ import { collectionGroup, doc, getDoc, getDocs, query, where } from "firebase/fi
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "@/lib/firebase";
+
+async function exportExcel() {
+  const fn = httpsCallable(functions, "adminExportCasesExcel");
+  const res: any = await fn();
+
+  const link = document.createElement("a");
+  link.href =
+    "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," +
+    res.data.base64;
+  link.download = res.data.fileName;
+  link.click();
+}
 
 function CardLink({
   href,
@@ -137,7 +151,20 @@ export default function DashboardPage() {
               subtitle="Crear/editar/activar especialidades"
               tag="ADMIN"
             />
+
+
+
+             {role === "admin" && (
+  <button
+    onClick={exportExcel}
+    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50"
+  >
+    Exportar Excel de causas
+  </button>
+)}
           </div>
+
+          
         </>
       ) : null}
     </AppShell>

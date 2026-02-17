@@ -2,6 +2,7 @@ import * as admin from "firebase-admin";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import sgMail from "@sendgrid/mail";
 import { defineSecret } from "firebase-functions/params";
+import ExcelJS from "exceljs";
 
 const SENDGRID_API_KEY = defineSecret("SENDGRID_API_KEY");
 const MAIL_FROM = defineSecret("MAIL_FROM");
@@ -32,14 +33,11 @@ async function assertAdmin(request: any) {
    PUSH HELPERS (FCM)
    ========================================================= */
 
-// Lee tokens desde: users/{uid}/fcmTokens/{tokenDocId}
-// (Recomendado: usar el token como docId)
 async function getUserTokens(uid: string): Promise<string[]> {
   const snap = await admin.firestore().collection(`users/${uid}/fcmTokens`).get();
   return snap.docs.map((d) => d.id);
 }
 
-// Envía push y limpia tokens inválidos (best-effort)
 async function notifyUid(uid: string, title: string, body: string, data?: Record<string, string>) {
   const tokens = await getUserTokens(uid);
   if (!tokens.length) return;
@@ -54,10 +52,7 @@ async function notifyUid(uid: string, title: string, body: string, data?: Record
   res.responses.forEach((r, idx) => {
     if (!r.success) {
       const code = (r.error as any)?.code || "";
-      if (
-        code.includes("registration-token-not-registered") ||
-        code.includes("invalid-argument")
-      ) {
+      if (code.includes("registration-token-not-registered") || code.includes("invalid-argument")) {
         batch.delete(admin.firestore().doc(`users/${uid}/fcmTokens/${tokens[idx]}`));
       }
     }
@@ -66,207 +61,286 @@ async function notifyUid(uid: string, title: string, body: string, data?: Record
 }
 
 /* =========================================================
-   CREATE CASE + INVITES
+   SENDGRID HELPERS
    ========================================================= */
 
-export const createCaseWithInvites = onCall(async (request) => {
-  const creatorUid = await assertAuthenticated(request);
+function getSendgridConfig() {
+  const apiKey = SENDGRID_API_KEY.value();
+  const from = MAIL_FROM.value();
+  if (!apiKey || !from) return { apiKey: "", from: "" };
+  return { apiKey, from };
+}
 
-  // Validar que exista perfil
-  const creatorDoc = await admin.firestore().collection("users").doc(creatorUid).get();
-  if (!creatorDoc.exists) throw new HttpsError("failed-precondition", "No existe perfil de usuario.");
+async function sendEmailBestEffort(args: { to: string; subject: string; text: string }) {
+  try {
+    const { apiKey, from } = getSendgridConfig();
+    if (!apiKey || !from) return { sent: false, error: "SendGrid no configurado (faltan secrets)." };
 
-  const data = request.data as {
-    caratulaTentativa?: string;
-    specialtyId?: string;
-    objeto?: string;
-    resumen?: string;
-    jurisdiccion?: Jurisdiccion;
+    if (!apiKey.startsWith("SG.")) return { sent: false, error: 'API key does not start with "SG.".' };
 
-    broughtByParticipates?: boolean;
-    assignmentMode?: AssignmentMode;
+    sgMail.setApiKey(apiKey);
+    await sgMail.send({ to: args.to, from, subject: args.subject, text: args.text });
 
-    directAssigneesUids?: string[];
-    directJustification?: string;
-  };
-
-  const caratulaTentativa = String(data?.caratulaTentativa ?? "").trim();
-  const specialtyId = String(data?.specialtyId ?? "").trim();
-  const objeto = String(data?.objeto ?? "").trim();
-  const resumen = String(data?.resumen ?? "").trim();
-  const jurisdiccion = data?.jurisdiccion as Jurisdiccion;
-
-  const broughtByParticipates = !!data?.broughtByParticipates;
-  const assignmentMode = (data?.assignmentMode ?? "auto") as AssignmentMode;
-
-  if (!caratulaTentativa) throw new HttpsError("invalid-argument", "Falta carátula tentativa.");
-  if (!specialtyId) throw new HttpsError("invalid-argument", "Falta specialtyId.");
-  if (!objeto) throw new HttpsError("invalid-argument", "Falta objeto.");
-  if (!resumen) throw new HttpsError("invalid-argument", "Falta resumen.");
-  if (!jurisdiccion) throw new HttpsError("invalid-argument", "Falta jurisdicción.");
-
-  // Regla: siempre se asignan 2 abogados finales.
-  const requiredAssigneesCount = 2;
-
-  // Confirmados iniciales: si participa, el creador queda confirmado.
-  const confirmedAssigneesUids = broughtByParticipates ? [creatorUid] : [];
-
-  // Determinar a quién invitar (UIDs)
-  let inviteUids: string[] = [];
-
-  if (assignmentMode === "direct") {
-    const just = String(data?.directJustification ?? "").trim();
-    const direct = uniq((data?.directAssigneesUids ?? []).map(String));
-
-    const requiredInvites = broughtByParticipates ? 1 : 2;
-
-    if (direct.length !== requiredInvites) {
-      throw new HttpsError(
-        "invalid-argument",
-        `Asignación directa requiere ${requiredInvites} invitado(s).`
-      );
-    }
-    if (just.length < 10) {
-      throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
-    }
-
-    // No permitir invitarse a uno mismo
-    if (direct.includes(creatorUid)) {
-      throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
-    }
-
-    inviteUids = direct;
-  } else {
-    // AUTO: turno estricto por especialidad
-    const needed = requiredAssigneesCount - confirmedAssigneesUids.length; // 1 o 2
-    if (needed <= 0) {
-      inviteUids = [];
-    } else {
-      const usersQ = admin
-        .firestore()
-        .collection("users")
-        .where("isPracticing", "==", true)
-        .where("specialties", "array-contains", specialtyId);
-
-      await admin.firestore().runTransaction(async (tx) => {
-        const usersSnap = await tx.get(usersQ);
-
-        const candidates = usersSnap.docs
-          .map((d) => ({ uid: d.id, email: (d.data() as any)?.email ?? "" }))
-          .filter((u) => (broughtByParticipates ? u.uid !== creatorUid : true))
-          .sort((a, b) => String(a.email).localeCompare(String(b.email))); // orden estable
-
-        if (candidates.length < needed) {
-          throw new HttpsError("failed-precondition", "No hay suficientes abogados elegibles en esa especialidad.");
-        }
-
-        const rotRef = admin.firestore().collection("rotationState").doc(specialtyId);
-        const rotSnap = await tx.get(rotRef);
-        const cursor = rotSnap.exists ? Number((rotSnap.data() as any)?.cursor ?? 0) : 0;
-
-        const picked: string[] = [];
-        let idx = cursor;
-
-        while (picked.length < needed) {
-          const u = candidates[idx % candidates.length];
-          if (!picked.includes(u.uid)) picked.push(u.uid);
-          idx++;
-        }
-
-        inviteUids = picked;
-
-        // avanzar cursor
-        tx.set(
-          rotRef,
-          {
-            cursor: idx % candidates.length,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-      });
-    }
+    return { sent: true, error: null as string | null };
+  } catch (e: any) {
+    const err = e?.response?.body ?? e;
+    console.error("SendGrid email error:", err);
+    return { sent: false, error: e?.message ?? String(e) };
   }
+}
 
-  // Crear caso + invitaciones
-  const caseRef = admin.firestore().collection("cases").doc();
-  const now = admin.firestore.FieldValue.serverTimestamp();
+async function sendEmailsBestEffort(args: { to: string[]; subject: string; text: string }) {
+  try {
+    const { apiKey, from } = getSendgridConfig();
+    if (!apiKey || !from) return { sent: false, error: "SendGrid no configurado (faltan secrets)." };
+    if (!apiKey.startsWith("SG.")) return { sent: false, error: 'API key does not start with "SG.".' };
 
-  const directJustification = assignmentMode === "direct" ? String(data?.directJustification ?? "").trim() : "";
-  const directAssigneesUids = assignmentMode === "direct" ? inviteUids : [];
+    const toList = (args.to ?? [])
+      .map((x) => String(x || "").trim().toLowerCase())
+      .filter((x) => x.includes("@"));
 
-  await admin.firestore().runTransaction(async (tx) => {
-    // 1) LECTURAS (todas primero)
-    const userRefs = inviteUids.map((u) => admin.firestore().collection("users").doc(u));
-    const userSnaps = await Promise.all(userRefs.map((ref) => tx.get(ref)));
+    if (!toList.length) return { sent: false, error: "No hay destinatarios válidos." };
 
-    const emailByUid = new Map<string, string>();
-    userSnaps.forEach((snap) => {
-      const email = snap.exists ? String((snap.data() as any)?.email ?? "") : "";
-      emailByUid.set(snap.id, email);
+    sgMail.setApiKey(apiKey);
+
+    // sendMultiple manda 1 request con múltiples destinatarios
+    await sgMail.sendMultiple({
+      to: toList,
+      from,
+      subject: args.subject,
+      text: args.text,
     });
 
-    // 2) ESCRITURAS
-    tx.set(caseRef, {
-      caratulaTentativa,
-      specialtyId,
-      objeto,
-      resumen,
-      jurisdiccion,
-
-      broughtByUid: creatorUid,
-      broughtByParticipates,
-
-      assignmentMode,
-      directAssigneesUids,
-      directJustification,
-
-      requiredAssigneesCount,
-      confirmedAssigneesUids,
-
-      status: "draft",
-      createdAt: now,
-    });
-
-    for (const invitedUid of inviteUids) {
-      const invitedEmail = emailByUid.get(invitedUid) ?? "";
-      const inviteRef = caseRef.collection("invites").doc();
-
-      tx.set(inviteRef, {
-        invitedUid,
-        invitedEmail,
-        status: "pending",
-        invitedAt: now,
-        respondedAt: null,
-
-        mode: assignmentMode,
-        directJustification: assignmentMode === "direct" ? directJustification : "",
-        createdByUid: creatorUid,
-      });
-    }
-  });
-
-  // ======================
-  // PUSH a invitados (best-effort)
-  // ======================
-  for (const invitedUid of inviteUids) {
-    try {
-      await notifyUid(
-        invitedUid,
-        "Nueva invitación",
-        `Te invitaron a una causa: ${caratulaTentativa}`,
-        { caseId: caseRef.id }
-      );
-    } catch (e) {
-      console.error("Push invite error:", e);
-    }
+    return { sent: true, error: null as string | null };
+  } catch (e: any) {
+    const err = e?.response?.body ?? e;
+    console.error("SendGrid email error:", err);
+    return { sent: false, error: e?.message ?? String(e) };
   }
-
-  return { caseId: caseRef.id };
-});
+}
 
 /* =========================================================
-   RESPOND INVITE + REINVITE + EMAIL
+   CREATE CASE + INVITES (+ PUSH + EMAIL INVITEES)
+   ========================================================= */
+
+export const createCaseWithInvites = onCall(
+  { secrets: [SENDGRID_API_KEY, MAIL_FROM] },
+  async (request) => {
+    const creatorUid = await assertAuthenticated(request);
+
+    // Validar que exista perfil
+    const creatorDoc = await admin.firestore().collection("users").doc(creatorUid).get();
+    if (!creatorDoc.exists) throw new HttpsError("failed-precondition", "No existe perfil de usuario.");
+
+    const data = request.data as {
+      caratulaTentativa?: string;
+      specialtyId?: string;
+      objeto?: string;
+      resumen?: string;
+      jurisdiccion?: Jurisdiccion;
+
+      broughtByParticipates?: boolean;
+      assignmentMode?: AssignmentMode;
+
+      directAssigneesUids?: string[];
+      directJustification?: string;
+    };
+
+    const caratulaTentativa = String(data?.caratulaTentativa ?? "").trim();
+    const specialtyId = String(data?.specialtyId ?? "").trim();
+    const objeto = String(data?.objeto ?? "").trim();
+    const resumen = String(data?.resumen ?? "").trim();
+    const jurisdiccion = data?.jurisdiccion as Jurisdiccion;
+
+    const broughtByParticipates = !!data?.broughtByParticipates;
+    const assignmentMode = (data?.assignmentMode ?? "auto") as AssignmentMode;
+
+    if (!caratulaTentativa) throw new HttpsError("invalid-argument", "Falta carátula tentativa.");
+    if (!specialtyId) throw new HttpsError("invalid-argument", "Falta specialtyId.");
+    if (!objeto) throw new HttpsError("invalid-argument", "Falta objeto.");
+    if (!resumen) throw new HttpsError("invalid-argument", "Falta resumen.");
+    if (!jurisdiccion) throw new HttpsError("invalid-argument", "Falta jurisdicción.");
+
+    // Regla: siempre se asignan 2 abogados finales.
+    const requiredAssigneesCount = 2;
+
+    // Confirmados iniciales: si participa, el creador queda confirmado.
+    const confirmedAssigneesUids = broughtByParticipates ? [creatorUid] : [];
+
+    // Determinar a quién invitar (UIDs)
+    let inviteUids: string[] = [];
+
+    if (assignmentMode === "direct") {
+      const just = String(data?.directJustification ?? "").trim();
+      const direct = uniq((data?.directAssigneesUids ?? []).map(String));
+
+      const requiredInvites = broughtByParticipates ? 1 : 2;
+
+      if (direct.length !== requiredInvites) {
+        throw new HttpsError("invalid-argument", `Asignación directa requiere ${requiredInvites} invitado(s).`);
+      }
+      if (just.length < 10) {
+        throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
+      }
+
+      // No permitir invitarse a uno mismo
+      if (direct.includes(creatorUid)) {
+        throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
+      }
+
+      inviteUids = direct;
+    } else {
+      // AUTO: turno estricto por especialidad
+      const needed = requiredAssigneesCount - confirmedAssigneesUids.length; // 1 o 2
+      if (needed <= 0) {
+        inviteUids = [];
+      } else {
+        const usersQ = admin
+          .firestore()
+          .collection("users")
+          .where("isPracticing", "==", true)
+          .where("specialties", "array-contains", specialtyId);
+
+        await admin.firestore().runTransaction(async (tx) => {
+          const usersSnap = await tx.get(usersQ);
+
+          const candidates = usersSnap.docs
+            .map((d) => ({ uid: d.id, email: (d.data() as any)?.email ?? "" }))
+            .filter((u) => (broughtByParticipates ? u.uid !== creatorUid : true))
+            .sort((a, b) => String(a.email).localeCompare(String(b.email))); // orden estable
+
+          if (candidates.length < needed) {
+            throw new HttpsError("failed-precondition", "No hay suficientes abogados elegibles en esa especialidad.");
+          }
+
+          const rotRef = admin.firestore().collection("rotationState").doc(specialtyId);
+          const rotSnap = await tx.get(rotRef);
+          const cursor = rotSnap.exists ? Number((rotSnap.data() as any)?.cursor ?? 0) : 0;
+
+          const picked: string[] = [];
+          let idx = cursor;
+
+          while (picked.length < needed) {
+            const u = candidates[idx % candidates.length];
+            if (!picked.includes(u.uid)) picked.push(u.uid);
+            idx++;
+          }
+
+          inviteUids = picked;
+
+          // avanzar cursor
+          tx.set(
+            rotRef,
+            {
+              cursor: idx % candidates.length,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        });
+      }
+    }
+
+    // Crear caso + invitaciones
+    const caseRef = admin.firestore().collection("cases").doc();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    const directJustification =
+      assignmentMode === "direct" ? String(data?.directJustification ?? "").trim() : "";
+    const directAssigneesUids = assignmentMode === "direct" ? inviteUids : [];
+
+    // Para email best-effort fuera de la transacción
+    let invitedEmails: string[] = [];
+
+    await admin.firestore().runTransaction(async (tx) => {
+      // 1) LECTURAS (todas primero)
+      const userRefs = inviteUids.map((u) => admin.firestore().collection("users").doc(u));
+      const userSnaps = await Promise.all(userRefs.map((ref) => tx.get(ref)));
+
+      const emailByUid = new Map<string, string>();
+      userSnaps.forEach((snap) => {
+        const email = snap.exists ? String((snap.data() as any)?.email ?? "") : "";
+        emailByUid.set(snap.id, email);
+      });
+
+      invitedEmails = inviteUids.map((u) => emailByUid.get(u) ?? "").filter(Boolean);
+
+      // 2) ESCRITURAS
+      tx.set(caseRef, {
+        caratulaTentativa,
+        specialtyId,
+        objeto,
+        resumen,
+        jurisdiccion,
+
+        broughtByUid: creatorUid,
+        broughtByParticipates,
+
+        assignmentMode,
+        directAssigneesUids,
+        directJustification,
+
+        requiredAssigneesCount,
+        confirmedAssigneesUids,
+
+        status: "draft",
+        createdAt: now,
+      });
+
+      for (const invitedUid of inviteUids) {
+        const invitedEmail = emailByUid.get(invitedUid) ?? "";
+        const inviteRef = caseRef.collection("invites").doc();
+
+        tx.set(inviteRef, {
+          invitedUid,
+          invitedEmail,
+          status: "pending",
+          invitedAt: now,
+          respondedAt: null,
+
+          mode: assignmentMode,
+          directJustification: assignmentMode === "direct" ? directJustification : "",
+          createdByUid: creatorUid,
+        });
+      }
+    });
+
+    // ======================
+    // PUSH a invitados (best-effort)
+    // ======================
+    for (const invitedUid of inviteUids) {
+      try {
+        await notifyUid(invitedUid, "Nueva invitación", `Te invitaron a una causa: ${caratulaTentativa}`, {
+          caseId: caseRef.id,
+        });
+      } catch (e) {
+        console.error("Push invite error:", e);
+      }
+    }
+
+    // ======================
+    // EMAIL a invitados (best-effort)
+    // ======================
+    const inviteEmailResult = await sendEmailsBestEffort({
+      to: invitedEmails,
+      subject: `Nueva invitación — ${caratulaTentativa}`,
+      text:
+        `Tenés una nueva invitación a una causa.\n\n` +
+        `Carátula: ${caratulaTentativa}\n` +
+        `Jurisdicción: ${jurisdiccion}\n` +
+        `CaseId: ${caseRef.id}\n`,
+    });
+
+    return {
+      caseId: caseRef.id,
+      inviteEmailSent: inviteEmailResult.sent,
+      inviteEmailError: inviteEmailResult.error,
+    };
+  }
+);
+
+/* =========================================================
+   RESPOND INVITE + REINVITE + PUSH + EMAIL (ALWAYS)
    ========================================================= */
 
 export const respondInvite = onCall(
@@ -286,20 +360,22 @@ export const respondInvite = onCall(
       const decision = data?.decision;
 
       if (!caseId || !inviteId) throw new HttpsError("invalid-argument", "Falta caseId/inviteId.");
-      if (decision !== "accepted" && decision !== "rejected") {
-        throw new HttpsError("invalid-argument", "Decisión inválida.");
-      }
+      if (decision !== "accepted" && decision !== "rejected") throw new HttpsError("invalid-argument", "Decisión inválida.");
 
       const caseRef = admin.firestore().collection("cases").doc(caseId);
       const inviteRef = caseRef.collection("invites").doc(inviteId);
 
-      // Para notificaciones push fuera de la transacción
+      // Para notificaciones/email fuera de la transacción
       let creatorUidToNotify = "";
       let caratulaToNotify = caseId;
       let nextUidToNotify: string | null = null;
 
+      // Para email al creador (capturado dentro de TX)
+      let creatorUidEmail = "";
+      let caratulaEmail = caseId;
+
       await admin.firestore().runTransaction(async (tx) => {
-        // ===== 1) READS (todo antes de escribir)
+        // READS
         const [caseSnap, inviteSnap] = await Promise.all([tx.get(caseRef), tx.get(inviteRef)]);
         if (!caseSnap.exists) throw new HttpsError("not-found", "Causa no existe.");
         if (!inviteSnap.exists) throw new HttpsError("not-found", "Invitación no existe.");
@@ -312,6 +388,9 @@ export const respondInvite = onCall(
 
         creatorUidToNotify = String(c.broughtByUid ?? "");
         caratulaToNotify = String(c.caratulaTentativa ?? caseId);
+
+        creatorUidEmail = creatorUidToNotify;
+        caratulaEmail = caratulaToNotify;
 
         const assignmentMode: "auto" | "direct" = (c.assignmentMode ?? "auto") as any;
         const specialtyId: string = String(c.specialtyId ?? "");
@@ -336,10 +415,7 @@ export const respondInvite = onCall(
 
         const remainingNeeded = Math.max(0, required - confirmed.length);
 
-        const shouldReplace =
-          decision === "rejected" &&
-          status !== "assigned" &&
-          remainingNeeded > 0;
+        const shouldReplace = decision === "rejected" && status !== "assigned" && remainingNeeded > 0;
 
         let nextUid: string | null = null;
         let nextEmail = "";
@@ -359,7 +435,6 @@ export const respondInvite = onCall(
             rotRef = admin.firestore().collection("rotationState").doc(specialtyId);
           } else {
             usersQ = admin.firestore().collection("users").where("isPracticing", "==", true);
-            // IMPORTANTE: "direct" (no __direct__)
             rotRef = admin.firestore().collection("rotationState").doc("direct");
           }
 
@@ -388,18 +463,14 @@ export const respondInvite = onCall(
           nextCursor = (cursor + 1) % candidates.length;
         }
 
-        // ===== 2) WRITES
+        // WRITES
         tx.update(inviteRef, { status: decision, respondedAt: now });
 
         if (decision === "accepted") {
           const newConfirmed = Array.from(new Set([...confirmed, uid]));
           const done = newConfirmed.length >= required;
 
-          tx.update(caseRef, {
-            confirmedAssigneesUids: newConfirmed,
-            status: done ? "assigned" : "draft",
-          });
-
+          tx.update(caseRef, { confirmedAssigneesUids: newConfirmed, status: done ? "assigned" : "draft" });
           return;
         }
 
@@ -418,7 +489,6 @@ export const respondInvite = onCall(
             createdByUid: broughtByUid,
           });
 
-          // para push al nuevo invitado fuera de la transacción
           nextUidToNotify = nextUid;
 
           tx.set(rotRef, { cursor: nextCursor, updatedAt: now }, { merge: true });
@@ -444,24 +514,15 @@ export const respondInvite = onCall(
 
       try {
         if (nextUidToNotify) {
-          await notifyUid(
-            nextUidToNotify,
-            "Nueva invitación",
-            `Te invitaron a una causa: ${caratulaToNotify}`,
-            { caseId }
-          );
+          await notifyUid(nextUidToNotify, "Nueva invitación", `Te invitaron a una causa: ${caratulaToNotify}`, { caseId });
         }
       } catch (e) {
         console.error("Push reinvite error:", e);
       }
 
       // ======================
-      // Email al creador (best-effort)
+      // EMAIL al creador (best-effort) - SIEMPRE
       // ======================
-      // Reutilizamos datos ya capturados cuando posible
-      const creatorUidEmail = creatorUidToNotify || String((await caseRef.get()).data()?.broughtByUid ?? "");
-      const caratulaEmail = caratulaToNotify || caseId;
-
       let creatorEmail = "";
       if (creatorUidEmail) {
         const creatorSnap = await admin.firestore().collection("users").doc(creatorUidEmail).get();
@@ -471,35 +532,22 @@ export const respondInvite = onCall(
       let emailSent = false;
       let emailError: string | null = null;
 
-      try {
-        if (creatorEmail) {
-          const apiKey = SENDGRID_API_KEY.value();
-          const from = MAIL_FROM.value();
-
-          if (!apiKey || !from) {
-            emailError = "SendGrid no configurado (faltan secrets).";
-          } else {
-            sgMail.setApiKey(apiKey);
-
-            const decisionLabel = decision === "accepted" ? "ACEPTADA" : "RECHAZADA";
-
-            await sgMail.send({
-              to: creatorEmail,
-              from,
-              subject: `Invitación ${decisionLabel} — ${caratulaEmail}`,
-              text:
-                `Novedad sobre la causa:\n\n` +
-                `Carátula: ${caratulaEmail}\n` +
-                `Decisión del invitado: ${decisionLabel}\n` +
-                `CaseId: ${caseId}\n`,
-            });
-
-            emailSent = true;
-          }
-        }
-      } catch (e: any) {
-        emailError = e?.message ?? String(e);
-        console.error("SendGrid email error:", e?.response?.body ?? e);
+      if (creatorEmail) {
+        const decisionLabel = decision === "accepted" ? "ACEPTADA" : "RECHAZADA";
+        const r = await sendEmailBestEffort({
+          to: creatorEmail,
+          subject: `Invitación ${decisionLabel} — ${caratulaEmail}`,
+          text:
+            `Novedad sobre la causa:\n\n` +
+            `Carátula: ${caratulaEmail}\n` +
+            `Decisión del invitado: ${decisionLabel}\n` +
+            `CaseId: ${caseId}\n`,
+        });
+        emailSent = r.sent;
+        emailError = r.error;
+      } else {
+        emailSent = false;
+        emailError = "El creador no tiene email cargado en users/{uid}.email.";
       }
 
       return { ok: true, emailSent, emailError };
@@ -553,14 +601,7 @@ export const adminCreateLawyer = onCall(async (request) => {
   const now = admin.firestore.FieldValue.serverTimestamp();
 
   await admin.firestore().collection("users").doc(uid).set(
-    {
-      email,
-      role,
-      isPracticing,
-      specialties,
-      createdAt: now,
-      updatedAt: now,
-    },
+    { email, role, isPracticing, specialties, createdAt: now, updatedAt: now },
     { merge: true }
   );
 
@@ -570,11 +611,7 @@ export const adminCreateLawyer = onCall(async (request) => {
 export const adminUpdateLawyerProfile = onCall(async (request) => {
   await assertAdmin(request);
 
-  const data = request.data as {
-    uid?: string;
-    specialties?: string[];
-    isPracticing?: boolean;
-  };
+  const data = request.data as { uid?: string; specialties?: string[]; isPracticing?: boolean };
 
   const uid = String(data?.uid ?? "");
   if (!uid) throw new HttpsError("invalid-argument", "Falta uid.");
@@ -583,11 +620,7 @@ export const adminUpdateLawyerProfile = onCall(async (request) => {
   const isPracticing = !!data?.isPracticing;
 
   await admin.firestore().collection("users").doc(uid).set(
-    {
-      specialties,
-      isPracticing,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
+    { specialties, isPracticing, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
     { merge: true }
   );
 
@@ -631,10 +664,6 @@ export const adminDeleteLawyer = onCall(async (request) => {
   return { ok: true };
 });
 
-/**
- * Compatibilidad: si tu frontend viejo llama createLawyer.
- * Deja role "lawyer" (NO "abogado") para que assertAdmin funcione.
- */
 export const createLawyer = onCall(async (request) => {
   await assertAdmin(request);
 
@@ -680,14 +709,11 @@ export const adminListAuthUsers = onCall(async (request) => {
 
   do {
     const res = await admin.auth().listUsers(pageSize, nextPageToken);
-    for (const u of res.users) {
-      if (u.email) users.push({ uid: u.uid, email: u.email.toLowerCase() });
-    }
+    for (const u of res.users) if (u.email) users.push({ uid: u.uid, email: u.email.toLowerCase() });
     nextPageToken = res.pageToken;
   } while (nextPageToken);
 
   users.sort((a, b) => a.email.localeCompare(b.email));
-
   return { users };
 });
 
@@ -709,9 +735,7 @@ export const adminEnsureUserProfile = onCall(async (request) => {
       role: snap.exists ? String((snap.data() as any)?.role ?? "lawyer") : "lawyer",
       isPracticing: snap.exists ? !!(snap.data() as any)?.isPracticing : true,
       specialties:
-        snap.exists && Array.isArray((snap.data() as any)?.specialties)
-          ? (snap.data() as any).specialties
-          : [],
+        snap.exists && Array.isArray((snap.data() as any)?.specialties) ? (snap.data() as any).specialties : [],
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       ...(snap.exists ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() }),
     },
@@ -719,4 +743,46 @@ export const adminEnsureUserProfile = onCall(async (request) => {
   );
 
   return { ok: true };
+});
+
+export const adminExportCasesExcel = onCall(async (request) => {
+  await assertAdmin(request);
+
+  const snap = await admin.firestore().collection("cases").get();
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Causas");
+
+  ws.columns = [
+    { header: "Carátula", key: "caratula", width: 30 },
+    { header: "Especialidad", key: "specialtyId", width: 20 },
+    { header: "Jurisdicción", key: "jurisdiccion", width: 15 },
+    { header: "Creador", key: "broughtByUid", width: 28 },
+    { header: "Participa", key: "participa", width: 10 },
+    { header: "Modo", key: "modo", width: 10 },
+    { header: "Confirmados", key: "confirmados", width: 30 },
+    { header: "Estado", key: "status", width: 12 },
+    { header: "Fecha", key: "createdAt", width: 20 },
+  ];
+
+  for (const doc of snap.docs) {
+    const c = doc.data() as any;
+
+    ws.addRow({
+      caratula: c.caratulaTentativa ?? "",
+      specialtyId: c.specialtyId ?? "",
+      jurisdiccion: c.jurisdiccion ?? "",
+      broughtByUid: c.broughtByUid ?? "",
+      participa: c.broughtByParticipates ? "Sí" : "No",
+      modo: c.assignmentMode ?? "",
+      confirmados: (c.confirmedAssigneesUids ?? []).join(", "),
+      status: c.status ?? "",
+      createdAt: c.createdAt?.toDate?.().toISOString?.() ?? "",
+    });
+  }
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const base64 = Buffer.from(buffer).toString("base64");
+
+  return { fileName: `causas-${Date.now()}.xlsx`, base64 };
 });
