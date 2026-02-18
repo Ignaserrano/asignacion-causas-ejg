@@ -193,44 +193,44 @@ export default function CasesAllPage() {
   }
 
   // ✅ load accepted invites per case id (for current page)
-  async function loadAcceptedForCases(caseIds: string[]) {
-    if (!caseIds.length) return;
+async function loadAcceptedForCases(caseIds: string[]) {
+  if (!caseIds.length) return;
 
-    const entries = await Promise.all(
-      caseIds.map(async (caseId) => {
-        try {
-          const qInv = query(
-            collection(db, "cases", caseId, "invites"),
-            where("status", "==", "accepted")
-          );
-          const snap = await getDocs(qInv);
+  const entries: Array<[string, string[]]> = await Promise.all(
+    caseIds.map(async (caseId): Promise<[string, string[]]> => {
+      try {
+        const qInv = query(
+          collection(db, "cases", caseId, "invites"),
+          where("status", "==", "accepted")
+        );
+        const snap = await getDocs(qInv);
 
-          const emails = await Promise.all(
-            snap.docs.map(async (d) => {
-              const data = d.data() as any;
-              const byEmail = safeLower(data?.invitedEmail);
-              if (byEmail) return byEmail;
+        const emails = await Promise.all(
+          snap.docs.map(async (d) => {
+            const data = d.data() as any;
+            const byEmail = safeLower(data?.invitedEmail);
+            if (byEmail) return byEmail;
 
-              const uid = String(data?.invitedUid ?? "");
-              const e = safeLower(await uidToEmail(uid));
-              return e;
-            })
-          );
+            const uid = String(data?.invitedUid ?? "");
+            const e = safeLower(await uidToEmail(uid));
+            return e;
+          })
+        );
 
-          const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
-          return [caseId, cleaned] as const;
-        } catch {
-          return [caseId, []] as const;
-        }
-      })
-    );
+        const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
+        return [caseId, cleaned];
+      } catch {
+        return [caseId, []]; // ✅ string[]
+      }
+    })
+  );
 
-    setAcceptedByCaseId((prev) => {
-      const next = { ...prev };
-      for (const [caseId, list] of entries) next[caseId] = list;
-      return next;
-    });
-  }
+  setAcceptedByCaseId((prev) => {
+    const next: Record<string, string[]> = { ...prev };
+    for (const [caseId, list] of entries) next[caseId] = list;
+    return next;
+  });
+}
 
   async function loadPage(resetToFirst: boolean) {
     setLoading(true);
