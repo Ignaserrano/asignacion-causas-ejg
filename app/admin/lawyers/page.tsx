@@ -470,6 +470,99 @@ export default function AdminLawyersPage() {
           </div>
         </div>
       ) : null}
+
+            {/* MODAL EDITAR */}
+      {editingUid ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-4 shadow-lg dark:border-gray-800 dark:bg-gray-900">
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Editar abogado —{" "}
+              {users.find((u) => u.uid === editingUid)?.email ?? editingUid}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                <input
+                  type="checkbox"
+                  checked={editIsPracticing}
+                  onChange={(e) => setEditIsPracticing(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                Practicante (isPracticing)
+              </label>
+            </div>
+
+            <div className="mt-4">
+              <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                Especialidades
+              </div>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                {activeSpecialties.length === 0 ? (
+                  <div className="text-sm text-gray-700 dark:text-gray-200">
+                    No hay especialidades activas cargadas.
+                  </div>
+                ) : (
+                  activeSpecialties.map((s) => {
+                    const checked = editSpecialties.includes(s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setEditSpecialties((prev) => toggle(prev, s.id))}
+                        className={`rounded-xl border px-3 py-2 text-sm font-extrabold shadow-sm
+                          ${
+                            checked
+                              ? "border-gray-300 bg-gray-100 hover:bg-gray-200 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700"
+                              : "border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+                          }`}
+                        title={s.id}
+                      >
+                        {s.name}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
+                Seleccionadas:{" "}
+                {editSpecialties.length === 0
+                  ? "ninguna"
+                  : editSpecialties
+                      .map((id) => specialtyNameById[id] ?? id)
+                      .join(", ")}
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                disabled={savingEdit}
+                onClick={() => setEditingUid(null)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50
+                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancelar
+              </button>
+
+              <button
+                disabled={savingEdit}
+                onClick={saveEdit}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 disabled:opacity-60
+                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                {savingEdit ? "Guardando..." : "Guardar cambios"}
+              </button>
+            </div>
+
+            <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+              Nota: guarda en Firestore vía Cloud Function <code>adminUpdateLawyerProfile</code>.
+            </div>
+          </div>
+        </div>
+      ) : null}
+      
     </AppShell>
   );
 }
+

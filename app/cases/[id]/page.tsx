@@ -432,11 +432,7 @@ export default function CaseDetailPage() {
                 <span className="text-gray-800 dark:text-gray-100">{c.resumen ?? "-"}</span>
               </div>
 
-              {c.assignmentMode === "direct" && c.directJustification ? (
-                <div className="rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm text-orange-950 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-100">
-                  <span className="font-black">Justificación (directa):</span> {c.directJustification}
-                </div>
-              ) : null}
+              
             </div>
           </div>
 

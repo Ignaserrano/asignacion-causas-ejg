@@ -103,8 +103,13 @@ export default function CasesAllPage() {
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
 
+  // ✅ quienes aceptaron por causa
+  const [acceptedByCaseId, setAcceptedByCaseId] = useState<Record<string, string[]>>({});
+
   // opciones para combos
-  const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
+    []
+  );
 
   // uid del creador filtrado (resuelto por email exacto)
   const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
@@ -170,6 +175,63 @@ export default function CasesAllPage() {
     setTotal(count);
   }
 
+  // ✅ helper: resolver uid -> email con cache
+  async function uidToEmail(uid: string): Promise<string> {
+    if (!uid) return "";
+    const cached = emailByUid[uid];
+    if (cached !== undefined) return cached || "";
+
+    try {
+      const uSnap = await getDoc(doc(db, "users", uid));
+      const email = uSnap.exists() ? String((uSnap.data() as any)?.email ?? "") : "";
+      setEmailByUid((m) => ({ ...m, [uid]: email || "" }));
+      return email || "";
+    } catch {
+      setEmailByUid((m) => ({ ...m, [uid]: "" }));
+      return "";
+    }
+  }
+
+  // ✅ load accepted invites per case id (for current page)
+  async function loadAcceptedForCases(caseIds: string[]) {
+    if (!caseIds.length) return;
+
+    const entries = await Promise.all(
+      caseIds.map(async (caseId) => {
+        try {
+          const qInv = query(
+            collection(db, "cases", caseId, "invites"),
+            where("status", "==", "accepted")
+          );
+          const snap = await getDocs(qInv);
+
+          const emails = await Promise.all(
+            snap.docs.map(async (d) => {
+              const data = d.data() as any;
+              const byEmail = safeLower(data?.invitedEmail);
+              if (byEmail) return byEmail;
+
+              const uid = String(data?.invitedUid ?? "");
+              const e = safeLower(await uidToEmail(uid));
+              return e;
+            })
+          );
+
+          const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
+          return [caseId, cleaned] as const;
+        } catch {
+          return [caseId, []] as const;
+        }
+      })
+    );
+
+    setAcceptedByCaseId((prev) => {
+      const next = { ...prev };
+      for (const [caseId, list] of entries) next[caseId] = list;
+      return next;
+    });
+  }
+
   async function loadPage(resetToFirst: boolean) {
     setLoading(true);
     setMsg(null);
@@ -193,6 +255,9 @@ export default function CasesAllPage() {
 
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
+
+      // ✅ cargar "quienes aceptaron" para las causas de esta página
+      await loadAcceptedForCases(rows.map((r) => r.id));
 
       // Pre-cargar emails (solo para mostrar email, nunca UID en UI)
       const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
@@ -382,6 +447,9 @@ export default function CasesAllPage() {
 
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
+
+      // ✅ cargar aceptados también al ir atrás
+      await loadAcceptedForCases(rows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error");
     } finally {
@@ -578,16 +646,39 @@ export default function CasesAllPage() {
                         Jurisdicción: <span className="font-bold">{r.jurisdiccion || "-"}</span>
                       </span>
                       <span>
-                        Creada: <span className="font-bold">{formatDateFromSeconds(r.createdAtSec)}</span>
+                        Creada:{" "}
+                        <span className="font-bold">{formatDateFromSeconds(r.createdAtSec)}</span>
                       </span>
                       <span>
                         Creador: <span className="font-bold">{creatorEmailShown(r.broughtByUid)}</span>
                       </span>
                     </div>
+
+                    {/* ✅ Aceptaron designación */}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Badge tone="ok">Aceptaron</Badge>
+                      {acceptedByCaseId[r.id] ? (
+                        acceptedByCaseId[r.id].length ? (
+                          <div className="flex flex-wrap gap-2">
+                            {acceptedByCaseId[r.id].map((e) => (
+                              <Badge key={e}>{e}</Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-gray-700 dark:text-gray-200">Nadie aún</span>
+                        )
+                      ) : (
+                        <span className="text-sm text-gray-700 dark:text-gray-200">Cargando...</span>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
+                    {r.status === "assigned" ? (
+                      <Badge tone="ok">ASIGNADA</Badge>
+                    ) : (
+                      <Badge>PENDIENTE</Badge>
+                    )}
                   </div>
                 </div>
 
@@ -629,7 +720,8 @@ export default function CasesAllPage() {
       </div>
 
       <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
-        Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por ahora).
+        Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
+        ahora).
       </div>
     </AppShell>
   );
