@@ -655,8 +655,10 @@ async function loadAcceptedForCases(caseIds: string[]) {
                     </div>
 
                     {/* ✅ Aceptaron designación */}
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <Badge tone="ok">Aceptaron</Badge>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
+                      <span>
+                        Aceptada por: <span className="font-bold"></span>
+                      </span>
                       {acceptedByCaseId[r.id] ? (
                         acceptedByCaseId[r.id].length ? (
                           <div className="flex flex-wrap gap-2">
