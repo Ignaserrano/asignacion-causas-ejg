@@ -491,20 +491,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/cases/mine"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-          >
-            Mis causas →
-          </Link>
-          <Link
-            href="/invites"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-          >
-            Mis invitaciones →
-          </Link>
-        </div>
+
       </div>
 
       {/* Filtros / orden */}
