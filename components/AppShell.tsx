@@ -55,13 +55,14 @@ export default function AppShell({
 
   const tabs: Tab[] = [
     { href: "/dashboard", label: "Inicio" },
+    
+    { href: "/cases/new", label: "Nueva causa" },
     { href: "/cases/mine", label: "Mis causas" },
     {
       href: "/invites",
       label: "Invitaciones",
       badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
     },
-    { href: "/cases/new", label: "Nueva causa" },
     { href: "/specialties", label: "Especialidades" },
   ];
 
