@@ -206,7 +206,7 @@ export const createCaseWithInvites = onCall(
 
           const candidates = usersSnap.docs
             .map((d) => ({ uid: d.id, email: (d.data() as any)?.email ?? "" }))
-            .filter((u) => (broughtByParticipates ? u.uid !== creatorUid : true))
+            .filter((u) => u.uid !== creatorUid)
             .sort((a, b) => String(a.email).localeCompare(String(b.email))); // orden estable
 
           if (candidates.length < needed) {
@@ -394,7 +394,7 @@ export const respondInvite = onCall(
 
         const assignmentMode: "auto" | "direct" = (c.assignmentMode ?? "auto") as any;
         const specialtyId: string = String(c.specialtyId ?? "");
-        const broughtByParticipates: boolean = !!c.broughtByParticipates;
+
         const broughtByUid: string = String(c.broughtByUid ?? "");
         const required: number = Number(c.requiredAssigneesCount ?? 2);
         const confirmed: string[] = Array.isArray(c.confirmedAssigneesUids) ? c.confirmedAssigneesUids : [];
@@ -411,7 +411,7 @@ export const respondInvite = onCall(
         });
 
         const blocked = new Set<string>([...confirmed, ...alreadyInvited]);
-        if (broughtByParticipates) blocked.add(broughtByUid);
+        if (broughtByUid) blocked.add(broughtByUid);
 
         const remainingNeeded = Math.max(0, required - confirmed.length);
 
