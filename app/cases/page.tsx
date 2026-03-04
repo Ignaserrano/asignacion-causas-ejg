@@ -86,6 +86,9 @@ export default function CasesAllPage() {
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
   const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>("");
 
+  // ✅ NUEVO: búsqueda por carátula (como Mis causas) — filtra en la página actual
+  const [searchCaratula, setSearchCaratula] = useState<string>("");
+
   // orden
   const [orderField, setOrderField] = useState<"createdAt" | "caratulaTentativa">("createdAt");
   const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
@@ -96,7 +99,7 @@ export default function CasesAllPage() {
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [prevStack, setPrevStack] = useState<DocumentSnapshot[]>([]);
 
-  // total (con filtros)
+  // total (con filtros server-side)
   const [total, setTotal] = useState<number>(0);
 
   // lookups
@@ -114,7 +117,6 @@ export default function CasesAllPage() {
   // uid del creador filtrado (resuelto por email exacto)
   const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
 
-  // ------------ helpers query ------------
   function buildCasesQuery(base?: Query, cursor?: DocumentSnapshot | null) {
     let qAny: any = base ?? collection(db, "cases");
 
@@ -175,7 +177,6 @@ export default function CasesAllPage() {
     setTotal(count);
   }
 
-  // ✅ helper: resolver uid -> email con cache
   async function uidToEmail(uid: string): Promise<string> {
     if (!uid) return "";
     const cached = emailByUid[uid];
@@ -192,45 +193,44 @@ export default function CasesAllPage() {
     }
   }
 
-  // ✅ load accepted invites per case id (for current page)
-async function loadAcceptedForCases(caseIds: string[]) {
-  if (!caseIds.length) return;
+  async function loadAcceptedForCases(caseIds: string[]) {
+    if (!caseIds.length) return;
 
-  const entries: Array<[string, string[]]> = await Promise.all(
-    caseIds.map(async (caseId): Promise<[string, string[]]> => {
-      try {
-        const qInv = query(
-          collection(db, "cases", caseId, "invites"),
-          where("status", "==", "accepted")
-        );
-        const snap = await getDocs(qInv);
+    const entries: Array<[string, string[]]> = await Promise.all(
+      caseIds.map(async (caseId): Promise<[string, string[]]> => {
+        try {
+          const qInv = query(
+            collection(db, "cases", caseId, "invites"),
+            where("status", "==", "accepted")
+          );
+          const snap = await getDocs(qInv);
 
-        const emails = await Promise.all(
-          snap.docs.map(async (d) => {
-            const data = d.data() as any;
-            const byEmail = safeLower(data?.invitedEmail);
-            if (byEmail) return byEmail;
+          const emails = await Promise.all(
+            snap.docs.map(async (d) => {
+              const data = d.data() as any;
+              const byEmail = safeLower(data?.invitedEmail);
+              if (byEmail) return byEmail;
 
-            const uid = String(data?.invitedUid ?? "");
-            const e = safeLower(await uidToEmail(uid));
-            return e;
-          })
-        );
+              const uid = String(data?.invitedUid ?? "");
+              const e = safeLower(await uidToEmail(uid));
+              return e;
+            })
+          );
 
-        const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
-        return [caseId, cleaned];
-      } catch {
-        return [caseId, []]; // ✅ string[]
-      }
-    })
-  );
+          const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
+          return [caseId, cleaned];
+        } catch {
+          return [caseId, []];
+        }
+      })
+    );
 
-  setAcceptedByCaseId((prev) => {
-    const next: Record<string, string[]> = { ...prev };
-    for (const [caseId, list] of entries) next[caseId] = list;
-    return next;
-  });
-}
+    setAcceptedByCaseId((prev) => {
+      const next: Record<string, string[]> = { ...prev };
+      for (const [caseId, list] of entries) next[caseId] = list;
+      return next;
+    });
+  }
 
   async function loadPage(resetToFirst: boolean) {
     setLoading(true);
@@ -256,10 +256,9 @@ async function loadAcceptedForCases(caseIds: string[]) {
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
-      // ✅ cargar "quienes aceptaron" para las causas de esta página
       await loadAcceptedForCases(rows.map((r) => r.id));
 
-      // Pre-cargar emails (solo para mostrar email, nunca UID en UI)
+      // precargar emails
       const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
       const missingUids = uids.filter((u) => !emailByUid[u]);
       if (missingUids.length) {
@@ -278,7 +277,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
         setEmailByUid(newMap);
       }
 
-      // Pre-cargar especialidades
+      // precargar especialidades
       const spIds = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
       const missingSp = spIds.filter((id) => !specialtyNameById[id]);
       if (missingSp.length) {
@@ -304,7 +303,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
     }
   }
 
-  // ------------ init auth + load specialties options + first load ------------
+  // init auth + options + first load
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -336,7 +335,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
         setPendingInvites(0);
       }
 
-      // opciones de especialidades (para filtro)
+      // opciones especialidades
       try {
         const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
         setSpecialtiesOptions(
@@ -353,6 +352,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
+      setSearchCaratula(""); // ✅ reset búsqueda
       await loadPage(true);
       await refreshTotalCount();
     });
@@ -361,7 +361,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // ------------ when creator email changes: resolve uid ------------
+  // when creator email changes: resolve uid
   useEffect(() => {
     (async () => {
       const email = safeLower(filterCreatorEmail);
@@ -379,28 +379,35 @@ async function loadAcceptedForCases(caseIds: string[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCreatorEmail]);
 
-  // ------------ when filters/order change: reset pagination & reload ------------
+  // when filters/order change: reset pagination & reload
   useEffect(() => {
     (async () => {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
+      setSearchCaratula(""); // ✅ si cambian filtros/orden, limpiamos búsqueda de página (opcional)
       await loadPage(true);
       await refreshTotalCount();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir]);
 
+  // ✅ NUEVO: filtro por carátula sobre pageRows (página actual)
+  const pageRowsFilteredByCaratula = useMemo(() => {
+    const s = safeLower(searchCaratula);
+    if (!s) return pageRows;
+    return pageRows.filter((r) => safeLower(r.caratulaTentativa).includes(s));
+  }, [pageRows, searchCaratula]);
+
   const showingText = useMemo(() => {
-    const shown = pageRows.length;
+    const shown = pageRowsFilteredByCaratula.length; // ✅ mostrado real (con búsqueda)
     const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-    const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + shown;
+    const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + Math.min(PAGE_SIZE, pageRows.length);
     return { shown, start, end };
-  }, [pageRows.length, page, total]);
+  }, [pageRowsFilteredByCaratula.length, pageRows.length, page, total]);
 
   const canNext = useMemo(() => pageRows.length === PAGE_SIZE, [pageRows.length]);
 
-  // ✅ nunca UID: si no hay email todavía, mostramos "Cargando..."
   const creatorEmailShown = (uid: string) => {
     if (!uid) return "-";
     const email = emailByUid[uid];
@@ -411,6 +418,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
     if (!canNext || !lastDoc) return;
     setPrevStack((s) => [...s, lastDoc]);
     setPage((p) => p + 1);
+    setSearchCaratula(""); // ✅ búsqueda es “por página”, al cambiar página la limpiamos
     await loadPage(false);
   }
 
@@ -427,6 +435,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
 
     setLoading(true);
     setMsg(null);
+    setSearchCaratula(""); // ✅ limpiar búsqueda al cambiar página
 
     try {
       const qCases = buildCasesQuery(undefined, prevCursor);
@@ -448,7 +457,6 @@ async function loadAcceptedForCases(caseIds: string[]) {
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
-      // ✅ cargar aceptados también al ir atrás
       await loadAcceptedForCases(rows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error");
@@ -462,6 +470,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
     setFilterJur("all");
     setFilterSpecialtyId("all");
     setFilterCreatorEmail("");
+    setSearchCaratula(""); // ✅
     setOrderField("createdAt");
     setOrderDir("desc");
   }
@@ -480,8 +489,11 @@ async function loadAcceptedForCases(caseIds: string[]) {
       {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
-          Mostrando <span className="font-bold">{showingText.shown}</span> · Total{" "}
-          <span className="font-bold">{total}</span>
+          Mostrando <span className="font-bold">{showingText.shown}</span>{" "}
+          <span className="text-gray-500 dark:text-gray-400">
+            (en esta página{searchCaratula ? " · filtrado por carátula" : ""})
+          </span>
+          {" "}· Total <span className="font-bold">{total}</span>
           {total > 0 ? (
             <>
               {" "}
@@ -490,8 +502,6 @@ async function loadAcceptedForCases(caseIds: string[]) {
             </>
           ) : null}
         </div>
-
-
       </div>
 
       {/* Filtros / orden */}
@@ -551,6 +561,17 @@ async function loadAcceptedForCases(caseIds: string[]) {
                 className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
               />
             </label>
+
+            {/* ✅ NUEVO */}
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Buscar carátula (página){" "}
+              <input
+                value={searchCaratula}
+                onChange={(e) => setSearchCaratula(e.target.value)}
+                placeholder="Buscar por carátula…"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+              />
+            </label>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -603,12 +624,12 @@ async function loadAcceptedForCases(caseIds: string[]) {
       {/* Listado */}
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
-          {pageRows.length === 0 ? (
+          {pageRowsFilteredByCaratula.length === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
-              No hay causas con esos filtros.
+              No hay causas con esos filtros{searchCaratula ? " (y búsqueda de carátula)." : "."}
             </div>
           ) : (
-            pageRows.map((r) => (
+            pageRowsFilteredByCaratula.map((r) => (
               <div
                 key={r.id}
                 className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
@@ -641,7 +662,6 @@ async function loadAcceptedForCases(caseIds: string[]) {
                       </span>
                     </div>
 
-                    {/* ✅ Aceptaron designación */}
                     <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
                       <span>
                         Aceptada por: <span className="font-bold"></span>
@@ -663,11 +683,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {r.status === "assigned" ? (
-                      <Badge tone="ok">ASIGNADA</Badge>
-                    ) : (
-                      <Badge>PENDIENTE</Badge>
-                    )}
+                    {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
                   </div>
                 </div>
 
@@ -710,7 +726,7 @@ async function loadAcceptedForCases(caseIds: string[]) {
 
       <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
         Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
-        ahora).
+        ahora). · La búsqueda por carátula filtra <span className="font-bold">solo la página actual</span>.
       </div>
     </AppShell>
   );

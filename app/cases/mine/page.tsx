@@ -23,12 +23,14 @@ import {
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 
+type CaseStatus = "draft" | "assigned";
+
 type CaseRow = {
   id: string;
   caratulaTentativa: string;
   specialtyId: string;
   jurisdiccion: string;
-  status: "draft" | "assigned";
+  status: CaseStatus;
   requiredAssigneesCount?: number;
   confirmedAssigneesUids?: string[];
   createdAt?: { seconds: number };
@@ -36,6 +38,8 @@ type CaseRow = {
 };
 
 type SpecialtyDoc = { name?: string };
+
+const PAGE_SIZE = 25;
 
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
@@ -63,7 +67,11 @@ function Badge({
   );
 }
 
-// Traer TODOS los docs por lotes (paginación)
+function safeLower(s: any) {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+// Traer TODOS los docs por lotes
 async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
   const all: QueryDocumentSnapshot<T>[] = [];
   let cursor: QueryDocumentSnapshot<T> | null = null;
@@ -86,21 +94,50 @@ async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
 export default function MyCasesPage() {
   const router = useRouter();
 
-  // auth/shell data
+  // auth/shell
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // page data
+  // data
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
 
-  // filtros
-  const [filterStatus, setFilterStatus] = useState<"all" | "draft" | "assigned">("all");
-  const [search, setSearch] = useState("");
+  // ✅ opciones (combo Materia)
+  const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
+    []
+  );
+
+  // ✅ filtros (como “Todas las causas”)
+  const [filterStatus, setFilterStatus] = useState<"all" | CaseStatus>("all");
+  const [filterJur, setFilterJur] = useState<string>("all");
+  const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
+  const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>(""); // email exacto
+
+  // ✅ búsqueda por carátula (ya existía)
+  const [searchCaratula, setSearchCaratula] = useState("");
+
+  // ✅ orden (como “Todas las causas”)
+  const [orderField, setOrderField] = useState<"createdAt" | "caratulaTentativa">("createdAt");
+  const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
+
+  // ✅ paginación 25
+  const [page, setPage] = useState(1);
+
+  // uid del creador filtrado (resuelto por email exacto)
+  const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
+
+  async function resolveCreatorUidByEmailExact(email: string): Promise<string | null> {
+    const e = safeLower(email);
+    if (!e) return null;
+    const qUsers = query(collection(db, "users"), where("email", "==", e), limit(1));
+    const snap = await getDocs(qUsers);
+    if (snap.empty) return "__none__"; // fuerza 0 resultados
+    return snap.docs[0].id;
+  }
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -113,7 +150,7 @@ export default function MyCasesPage() {
       setLoading(true);
       setMsg(null);
 
-      // rol (para admin tab)
+      // rol
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -122,7 +159,7 @@ export default function MyCasesPage() {
         setRole("lawyer");
       }
 
-      // pending invites (para badge en tabs)
+      // pending invites
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -135,23 +172,35 @@ export default function MyCasesPage() {
         setPendingInvites(0);
       }
 
+      // ✅ opciones de especialidades (para filtro)
       try {
-        // 1) Causas creadas por mí (todas, paginadas)
+        const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
+        setSpecialtiesOptions(
+          spSnap.docs.map((d) => ({
+            id: d.id,
+            name: String((d.data() as any)?.name ?? d.id),
+          }))
+        );
+      } catch {
+        // ok
+      }
+
+      try {
+        // 1) Causas creadas por mí
         const qCreatedBase = query(
           collection(db, "cases"),
           where("broughtByUid", "==", u.uid),
           orderBy("createdAt", "desc")
         );
 
-        // 2) Causas donde estoy confirmado (paginación por __name__)
-        // (después ordenamos en memoria por createdAt)
+        // 2) Causas donde estoy confirmado
         const qConfirmedBase = query(
           collection(db, "cases"),
           where("confirmedAssigneesUids", "array-contains", u.uid),
           orderBy("__name__")
         );
 
-        // 3) Invitaciones donde fui invitado (para traer casos que no estén en 1/2)
+        // 3) Invitaciones donde fui invitado
         const qInvitesBase = query(
           collectionGroup(db, "invites"),
           where("invitedUid", "==", u.uid),
@@ -188,7 +237,7 @@ export default function MyCasesPage() {
           })
         );
 
-        // ordenar por createdAt desc
+        // orden inicial (igual que antes)
         const list = Array.from(byId.values()).sort((a, b) => {
           const as = a.createdAt?.seconds ?? 0;
           const bs = b.createdAt?.seconds ?? 0;
@@ -196,6 +245,9 @@ export default function MyCasesPage() {
         });
 
         setRows(list);
+
+        // ✅ reset paginación al cargar
+        setPage(1);
       } catch (e: any) {
         setMsg(e?.message ?? "Error cargando mis causas");
       } finally {
@@ -206,7 +258,7 @@ export default function MyCasesPage() {
     return () => unsub();
   }, [router]);
 
-  // nombres de especialidades
+  // nombres de especialidades (lookup)
   useEffect(() => {
     const ids = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
     const missing = ids.filter((id) => !specialtyNameById[id]);
@@ -232,14 +284,102 @@ export default function MyCasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
-  const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    return rows.filter((r) => {
+  // ✅ cuando cambia email creador: resolver UID
+  useEffect(() => {
+    (async () => {
+      const email = safeLower(filterCreatorEmail);
+      if (!email) {
+        setCreatorUidFilter(null);
+      } else {
+        try {
+          const uid = await resolveCreatorUidByEmailExact(email);
+          setCreatorUidFilter(uid);
+        } catch {
+          setCreatorUidFilter("__none__");
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterCreatorEmail]);
+
+  // ✅ si cambian filtros/orden/búsqueda: volver a pág 1
+  useEffect(() => {
+    setPage(1);
+  }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir, searchCaratula]);
+
+  const filteredSorted = useMemo(() => {
+    const s = safeLower(searchCaratula);
+
+    const base = rows.filter((r) => {
       if (filterStatus !== "all" && r.status !== filterStatus) return false;
-      if (!s) return true;
-      return String(r.caratulaTentativa ?? "").toLowerCase().includes(s);
+      if (filterJur !== "all" && String(r.jurisdiccion ?? "") !== filterJur) return false;
+      if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId)
+        return false;
+      if (creatorUidFilter) {
+        if (creatorUidFilter === "__none__") return false;
+        if (String(r.broughtByUid ?? "") !== creatorUidFilter) return false;
+      }
+
+      if (s) {
+        const c = safeLower(r.caratulaTentativa);
+        if (!c.includes(s)) return false;
+      }
+
+      return true;
     });
-  }, [rows, filterStatus, search]);
+
+    const sorted = [...base].sort((a, b) => {
+      if (orderField === "createdAt") {
+        const as = Number(a.createdAt?.seconds ?? 0);
+        const bs = Number(b.createdAt?.seconds ?? 0);
+        return orderDir === "asc" ? as - bs : bs - as;
+      } else {
+        const ac = safeLower(a.caratulaTentativa);
+        const bc = safeLower(b.caratulaTentativa);
+        if (ac < bc) return orderDir === "asc" ? -1 : 1;
+        if (ac > bc) return orderDir === "asc" ? 1 : -1;
+        return 0;
+      }
+    });
+
+    return sorted;
+  }, [
+    rows,
+    filterStatus,
+    filterJur,
+    filterSpecialtyId,
+    creatorUidFilter,
+    orderField,
+    orderDir,
+    searchCaratula,
+  ]);
+
+  const totalFiltered = filteredSorted.length;
+
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filteredSorted.slice(start, start + PAGE_SIZE);
+  }, [filteredSorted, page]);
+
+  const canPrev = page > 1;
+  const canNext = page * PAGE_SIZE < totalFiltered;
+
+  const showingText = useMemo(() => {
+    const shown = pageRows.length;
+    const start = totalFiltered === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+    const end = totalFiltered === 0 ? 0 : (page - 1) * PAGE_SIZE + shown;
+    return { shown, start, end };
+  }, [pageRows.length, page, totalFiltered]);
+
+  function resetFilters() {
+    setFilterStatus("all");
+    setFilterJur("all");
+    setFilterSpecialtyId("all");
+    setFilterCreatorEmail("");
+    setSearchCaratula("");
+    setOrderField("createdAt");
+    setOrderDir("desc");
+  }
 
   async function doLogout() {
     await signOut(auth);
@@ -257,7 +397,15 @@ export default function MyCasesPage() {
       {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
-          Mostrando <span className="font-bold">{filtered.length}</span> de{" "}
+          Mostrando <span className="font-bold">{showingText.shown}</span>
+          {totalFiltered > 0 ? (
+            <>
+              {" "}
+              · Rango <span className="font-bold">{showingText.start}</span>–{" "}
+              <span className="font-bold">{showingText.end}</span>
+            </>
+          ) : null}{" "}
+          · Total (con filtros) <span className="font-bold">{totalFiltered}</span> · Total sin filtros{" "}
           <span className="font-bold">{rows.length}</span>
         </div>
 
@@ -271,59 +419,131 @@ export default function MyCasesPage() {
         </div>
       </div>
 
-      {/* Filtros */}
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
-          Estado{" "}
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as any)}
-            className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-          >
-            <option value="all">Todos</option>
-            <option value="draft">Draft</option>
-            <option value="assigned">Asignada</option>
-          </select>
-        </label>
+      {/* Filtros / orden (igual estilo “Todas las causas”) */}
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Estado{" "}
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="all">Todos</option>
+                <option value="draft">Pendiente</option>
+                <option value="assigned">Asignada</option>
+              </select>
+            </label>
 
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por carátula…"
-          className="min-w-[240px] flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
-        />
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Jurisdicción{" "}
+              <select
+                value={filterJur}
+                onChange={(e) => setFilterJur(e.target.value)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="all">Todas</option>
+                <option value="nacional">Nacional</option>
+                <option value="federal">Federal</option>
+                <option value="caba">CABA</option>
+                <option value="provincia_bs_as">Provincia Bs. As.</option>
+              </select>
+            </label>
 
-        <button
-          onClick={() => {
-            setFilterStatus("all");
-            setSearch("");
-          }}
-          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-        >
-          Limpiar
-        </button>
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Materia{" "}
+              <select
+                value={filterSpecialtyId}
+                onChange={(e) => setFilterSpecialtyId(e.target.value)}
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="all">Todas</option>
+                {specialtiesOptions.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Creador (email exacto){" "}
+              <input
+                value={filterCreatorEmail}
+                onChange={(e) => setFilterCreatorEmail(e.target.value)}
+                placeholder="ej: abogado@estudio.com"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+              />
+            </label>
+
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Buscar carátula{" "}
+              <input
+                value={searchCaratula}
+                onChange={(e) => setSearchCaratula(e.target.value)}
+                placeholder="Buscar por carátula…"
+                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Ordenar por{" "}
+              <select
+                value={orderField}
+                onChange={(e) => setOrderField(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="createdAt">Fecha de creación</option>
+                <option value="caratulaTentativa">Carátula</option>
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Dirección{" "}
+              <select
+                value={orderDir}
+                onChange={(e) => setOrderDir(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="desc">Descendente</option>
+                <option value="asc">Ascendente</option>
+              </select>
+            </label>
+
+            <button
+              onClick={resetFilters}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        </div>
       </div>
 
       {loading ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...
         </div>
       ) : null}
 
       {msg ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ⚠️ {msg}
         </div>
       ) : null}
 
+      {/* Listado */}
       {!loading && !msg ? (
-        <div className="grid gap-3">
-          {filtered.length === 0 ? (
+        <div className="mt-4 grid gap-3">
+          {pageRows.length === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
-              No tenés causas aún (o no coinciden con el filtro).
+              No tenés causas con esos filtros.
             </div>
           ) : (
-            filtered.map((r) => {
+            pageRows.map((r) => {
               const required = Number(r.requiredAssigneesCount ?? 2);
               const confirmed = (r.confirmedAssigneesUids ?? []).length;
               const missing = Math.max(0, required - confirmed);
@@ -348,14 +568,12 @@ export default function MyCasesPage() {
                           {specialtyNameById[r.specialtyId] ?? r.specialtyId}
                         </span>{" "}
                         · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
-                        <span className="font-bold">
-                          {formatDateFromSeconds(r.createdAt?.seconds)}
-                        </span>
+                        <span className="font-bold">{formatDateFromSeconds(r.createdAt?.seconds)}</span>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>DRAFT</Badge>}
+                      {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
                       <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
                         {missing > 0
                           ? `faltan ${missing} (${confirmed}/${required})`
@@ -376,6 +594,38 @@ export default function MyCasesPage() {
               );
             })
           )}
+        </div>
+      ) : null}
+
+      {/* ✅ Paginación (25) */}
+      {!loading && !msg ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            disabled={!canPrev}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            ← Anterior
+          </button>
+
+          <div className="text-sm text-gray-800 dark:text-gray-100">
+            Página <span className="font-black">{page}</span>
+          </div>
+
+          <button
+            disabled={!canNext}
+            onClick={() => setPage((p) => p + 1)}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            Siguiente →
+          </button>
+        </div>
+      ) : null}
+
+      {filterCreatorEmail ? (
+        <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
+          Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
+          ahora).
         </div>
       ) : null}
     </AppShell>
