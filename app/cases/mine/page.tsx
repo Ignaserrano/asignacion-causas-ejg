@@ -14,6 +14,10 @@ import {
   doc,
   getDoc,
   collectionGroup,
+  startAfter,
+  Query,
+  QueryDocumentSnapshot,
+  DocumentData,
 } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
@@ -57,6 +61,26 @@ function Badge({
       {children}
     </span>
   );
+}
+
+// Traer TODOS los docs por lotes (paginación)
+async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
+  const all: QueryDocumentSnapshot<T>[] = [];
+  let cursor: QueryDocumentSnapshot<T> | null = null;
+
+  while (true) {
+    const qPage = cursor
+      ? query(qBase, startAfter(cursor), limit(500))
+      : query(qBase, limit(500));
+
+    const snap = await getDocs(qPage);
+    all.push(...snap.docs);
+
+    if (snap.size < 500) break;
+    cursor = snap.docs[snap.docs.length - 1] as QueryDocumentSnapshot<T>;
+  }
+
+  return all;
 }
 
 export default function MyCasesPage() {
@@ -112,28 +136,32 @@ export default function MyCasesPage() {
       }
 
       try {
-        // 1) Causas creadas por mí
-        const qCreated = query(
+        // 1) Causas creadas por mí (todas, paginadas)
+        const qCreatedBase = query(
           collection(db, "cases"),
           where("broughtByUid", "==", u.uid),
-          orderBy("createdAt", "desc"),
-          limit(50)
+          orderBy("createdAt", "desc")
         );
 
-        // 2) Causas donde estoy confirmado (sin orderBy para evitar índices)
-        const qConfirmed = query(
+        // 2) Causas donde estoy confirmado (paginación por __name__)
+        // (después ordenamos en memoria por createdAt)
+        const qConfirmedBase = query(
           collection(db, "cases"),
           where("confirmedAssigneesUids", "array-contains", u.uid),
-          limit(50)
+          orderBy("__name__")
         );
 
-        // 3) CaseIds donde fui invitado
-        const qInvites = query(collectionGroup(db, "invites"), where("invitedUid", "==", u.uid));
+        // 3) Invitaciones donde fui invitado (para traer casos que no estén en 1/2)
+        const qInvitesBase = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          orderBy("__name__")
+        );
 
-        const [createdSnap, confirmedSnap, invitesSnap] = await Promise.all([
-          getDocs(qCreated),
-          getDocs(qConfirmed),
-          getDocs(qInvites),
+        const [createdDocs, confirmedDocs, invitesDocs] = await Promise.all([
+          getAllDocs(qCreatedBase),
+          getAllDocs(qConfirmedBase),
+          getAllDocs(qInvitesBase),
         ]);
 
         const byId = new Map<string, CaseRow>();
@@ -142,12 +170,12 @@ export default function MyCasesPage() {
           byId.set(id, { id, ...(data as any) });
         };
 
-        createdSnap.docs.forEach((d) => addCaseDoc(d.id, d.data()));
-        confirmedSnap.docs.forEach((d) => addCaseDoc(d.id, d.data()));
+        createdDocs.forEach((d) => addCaseDoc(d.id, d.data()));
+        confirmedDocs.forEach((d) => addCaseDoc(d.id, d.data()));
 
         // traer causas de invitaciones (por docId del parent)
         const invitedCaseIds = Array.from(
-          new Set(invitesSnap.docs.map((d) => d.ref.parent.parent?.id ?? "").filter(Boolean))
+          new Set(invitesDocs.map((d) => d.ref.parent.parent?.id ?? "").filter(Boolean))
         );
 
         await Promise.all(
