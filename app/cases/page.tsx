@@ -17,6 +17,8 @@ import {
   DocumentSnapshot,
   Query,
   collectionGroup,
+  writeBatch,
+  deleteDoc,
 } from "firebase/firestore";
 
 import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
@@ -86,7 +88,7 @@ export default function CasesAllPage() {
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
   const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>("");
 
-  // ✅ NUEVO: búsqueda por carátula (como Mis causas) — filtra en la página actual
+  // búsqueda por carátula (página actual)
   const [searchCaratula, setSearchCaratula] = useState<string>("");
 
   // orden
@@ -99,14 +101,14 @@ export default function CasesAllPage() {
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [prevStack, setPrevStack] = useState<DocumentSnapshot[]>([]);
 
-  // total (con filtros server-side)
+  // total (con filtros)
   const [total, setTotal] = useState<number>(0);
 
   // lookups
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
 
-  // ✅ quienes aceptaron por causa
+  // quienes aceptaron por causa
   const [acceptedByCaseId, setAcceptedByCaseId] = useState<Record<string, string[]>>({});
 
   // opciones para combos
@@ -116,6 +118,11 @@ export default function CasesAllPage() {
 
   // uid del creador filtrado (resuelto por email exacto)
   const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
+
+  // ✅ modal eliminar
+  const [deleteCaseId, setDeleteCaseId] = useState<string | null>(null);
+  const [deleteCaseTitle, setDeleteCaseTitle] = useState<string>("");
+  const [deleting, setDeleting] = useState(false);
 
   function buildCasesQuery(base?: Query, cursor?: DocumentSnapshot | null) {
     let qAny: any = base ?? collection(db, "cases");
@@ -303,6 +310,25 @@ export default function CasesAllPage() {
     }
   }
 
+  // ✅ borrar subcolección invites en tandas, y luego borrar doc de la causa
+  async function deleteCaseFully(caseId: string) {
+    // Seguridad extra en UI
+    if (role !== "admin") throw new Error("No autorizado");
+
+    // 1) borrar invites (si existe)
+    for (let i = 0; i < 50; i++) {
+      const snap = await getDocs(query(collection(db, "cases", caseId, "invites"), limit(450)));
+      if (snap.empty) break;
+
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+
+    // 2) borrar doc principal
+    await deleteDoc(doc(db, "cases", caseId));
+  }
+
   // init auth + options + first load
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -352,7 +378,7 @@ export default function CasesAllPage() {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
-      setSearchCaratula(""); // ✅ reset búsqueda
+      setSearchCaratula("");
       await loadPage(true);
       await refreshTotalCount();
     });
@@ -385,14 +411,14 @@ export default function CasesAllPage() {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
-      setSearchCaratula(""); // ✅ si cambian filtros/orden, limpiamos búsqueda de página (opcional)
+      setSearchCaratula("");
       await loadPage(true);
       await refreshTotalCount();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir]);
 
-  // ✅ NUEVO: filtro por carátula sobre pageRows (página actual)
+  // filtro por carátula sobre pageRows
   const pageRowsFilteredByCaratula = useMemo(() => {
     const s = safeLower(searchCaratula);
     if (!s) return pageRows;
@@ -400,7 +426,7 @@ export default function CasesAllPage() {
   }, [pageRows, searchCaratula]);
 
   const showingText = useMemo(() => {
-    const shown = pageRowsFilteredByCaratula.length; // ✅ mostrado real (con búsqueda)
+    const shown = pageRowsFilteredByCaratula.length;
     const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
     const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + Math.min(PAGE_SIZE, pageRows.length);
     return { shown, start, end };
@@ -418,7 +444,7 @@ export default function CasesAllPage() {
     if (!canNext || !lastDoc) return;
     setPrevStack((s) => [...s, lastDoc]);
     setPage((p) => p + 1);
-    setSearchCaratula(""); // ✅ búsqueda es “por página”, al cambiar página la limpiamos
+    setSearchCaratula("");
     await loadPage(false);
   }
 
@@ -435,7 +461,7 @@ export default function CasesAllPage() {
 
     setLoading(true);
     setMsg(null);
-    setSearchCaratula(""); // ✅ limpiar búsqueda al cambiar página
+    setSearchCaratula("");
 
     try {
       const qCases = buildCasesQuery(undefined, prevCursor);
@@ -470,7 +496,7 @@ export default function CasesAllPage() {
     setFilterJur("all");
     setFilterSpecialtyId("all");
     setFilterCreatorEmail("");
-    setSearchCaratula(""); // ✅
+    setSearchCaratula("");
     setOrderField("createdAt");
     setOrderDir("desc");
   }
@@ -492,8 +518,8 @@ export default function CasesAllPage() {
           Mostrando <span className="font-bold">{showingText.shown}</span>{" "}
           <span className="text-gray-500 dark:text-gray-400">
             (en esta página{searchCaratula ? " · filtrado por carátula" : ""})
-          </span>
-          {" "}· Total <span className="font-bold">{total}</span>
+          </span>{" "}
+          · Total <span className="font-bold">{total}</span>
           {total > 0 ? (
             <>
               {" "}
@@ -562,7 +588,6 @@ export default function CasesAllPage() {
               />
             </label>
 
-            {/* ✅ NUEVO */}
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Buscar carátula (página){" "}
               <input
@@ -663,9 +688,7 @@ export default function CasesAllPage() {
                     </div>
 
                     <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
-                      <span>
-                        Aceptada por: <span className="font-bold"></span>
-                      </span>
+                      <span>Aceptada por:</span>
                       {acceptedByCaseId[r.id] ? (
                         acceptedByCaseId[r.id].length ? (
                           <div className="flex flex-wrap gap-2">
@@ -687,13 +710,26 @@ export default function CasesAllPage() {
                   </div>
                 </div>
 
-                <div className="mt-4">
+                <div className="mt-4 flex flex-wrap gap-2">
                   <Link
                     href={`/cases/${r.id}`}
                     className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                   >
                     Ver detalle →
                   </Link>
+
+                  {/* ✅ SOLO ADMIN */}
+                  {role === "admin" ? (
+                    <button
+                      onClick={() => {
+                        setDeleteCaseId(r.id);
+                        setDeleteCaseTitle(r.caratulaTentativa || "(sin carátula)");
+                      }}
+                      className="rounded-xl border border-red-300 bg-red-600 px-3 py-2 text-sm font-extrabold text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-700 dark:hover:bg-red-800"
+                    >
+                      Eliminar causa
+                    </button>
+                  ) : null}
                 </div>
               </div>
             ))
@@ -728,6 +764,78 @@ export default function CasesAllPage() {
         Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
         ahora). · La búsqueda por carátula filtra <span className="font-bold">solo la página actual</span>.
       </div>
+
+      {/* ✅ MODAL CONFIRMAR ELIMINACIÓN */}
+      {deleteCaseId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-800 dark:bg-gray-900">
+            <div className="text-lg font-black text-gray-900 dark:text-gray-100">
+              Confirmar eliminación
+            </div>
+
+            <div className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+              Vas a eliminar definitivamente la causa:
+              <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm font-bold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100">
+                {deleteCaseTitle} <span className="font-normal">(#{deleteCaseId})</span>
+              </div>
+              <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                Se eliminará el documento de la causa y sus invites. Si la causa tiene otras
+                subcolecciones, esas no se borran automáticamente (Firestore no hace borrado recursivo
+                desde el cliente).
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button
+                disabled={deleting}
+                onClick={() => {
+                  setDeleteCaseId(null);
+                  setDeleteCaseTitle("");
+                }}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancelar
+              </button>
+
+              <button
+                disabled={deleting}
+                onClick={async () => {
+                  if (!deleteCaseId) return;
+                  setDeleting(true);
+                  setMsg(null);
+
+                  try {
+                    await deleteCaseFully(deleteCaseId);
+
+                    // cerrar modal
+                    const removedId = deleteCaseId;
+                    setDeleteCaseId(null);
+                    setDeleteCaseTitle("");
+
+                    // refrescar UI sin recargar todo si se puede
+                    setPageRows((prev) => prev.filter((r) => r.id !== removedId));
+                    setAcceptedByCaseId((prev) => {
+                      const next = { ...prev };
+                      delete next[removedId];
+                      return next;
+                    });
+
+                    // refrescar total y, si querés, traer de nuevo página actual
+                    await refreshTotalCount();
+                  } catch (e: any) {
+                    setMsg(e?.message ?? "Error eliminando causa");
+                  } finally {
+                    setDeleting(false);
+                  }
+                }}
+                className="rounded-xl border border-red-300 bg-red-600 px-3 py-2 text-sm font-extrabold text-white hover:bg-red-700 disabled:opacity-60 dark:border-red-700 dark:bg-red-700 dark:hover:bg-red-800"
+              >
+                {deleting ? "Eliminando..." : "Sí, eliminar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AppShell>
   );
 }
