@@ -35,11 +35,22 @@ type CaseRow = {
   confirmedAssigneesUids?: string[];
   createdAt?: { seconds: number };
   broughtByUid?: string;
+
+  // ✅ opcional (si ya lo agregaste en tu modelo nuevo)
+  participantsUids?: string[];
 };
 
 type SpecialtyDoc = { name?: string };
 
 const PAGE_SIZE = 25;
+
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr.filter(Boolean)));
+}
+
+function safeLower(s: any) {
+  return String(s ?? "").trim().toLowerCase();
+}
 
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
@@ -65,10 +76,6 @@ function Badge({
       {children}
     </span>
   );
-}
-
-function safeLower(s: any) {
-  return String(s ?? "").trim().toLowerCase();
 }
 
 // Traer TODOS los docs por lotes
@@ -106,39 +113,34 @@ export default function MyCasesPage() {
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
 
-  // ✅ opciones (combo Materia)
+  // opciones (combo Materia)
   const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
     []
   );
 
-  // ✅ filtros (como “Todas las causas”)
+  // ✅ opciones abogados (emails)
+  const [lawyerOptions, setLawyerOptions] = useState<Array<{ uid: string; email: string }>>([]);
+
+  // filtros
   const [filterStatus, setFilterStatus] = useState<"all" | CaseStatus>("all");
   const [filterJur, setFilterJur] = useState<string>("all");
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
-  const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>(""); // email exacto
 
-  // ✅ búsqueda por carátula (ya existía)
+  // ✅ reemplaza “creador”: compartido con (email)
+  const [filterSharedWithEmail, setFilterSharedWithEmail] = useState<string>("all");
+  const [sharedWithUidFilter, setSharedWithUidFilter] = useState<string | null>(null);
+
+  // búsqueda carátula
   const [searchCaratula, setSearchCaratula] = useState("");
 
-  // ✅ orden (como “Todas las causas”)
+  // orden
   const [orderField, setOrderField] = useState<"createdAt" | "caratulaTentativa">("createdAt");
   const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
 
-  // ✅ paginación 25
+  // paginación
   const [page, setPage] = useState(1);
 
-  // uid del creador filtrado (resuelto por email exacto)
-  const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
-
-  async function resolveCreatorUidByEmailExact(email: string): Promise<string | null> {
-    const e = safeLower(email);
-    if (!e) return null;
-    const qUsers = query(collection(db, "users"), where("email", "==", e), limit(1));
-    const snap = await getDocs(qUsers);
-    if (snap.empty) return "__none__"; // fuerza 0 resultados
-    return snap.docs[0].id;
-  }
-
+  // ---------- carga principal ----------
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -159,7 +161,7 @@ export default function MyCasesPage() {
         setRole("lawyer");
       }
 
-      // pending invites
+      // pending invites (badge tabs)
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -172,7 +174,7 @@ export default function MyCasesPage() {
         setPendingInvites(0);
       }
 
-      // ✅ opciones de especialidades (para filtro)
+      // ✅ opciones de especialidades
       try {
         const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
         setSpecialtiesOptions(
@@ -183,6 +185,27 @@ export default function MyCasesPage() {
         );
       } catch {
         // ok
+      }
+
+      // ✅ opciones de abogados (emails)
+      // OJO: requiere reglas que permitan leer users (al menos email) a miembros.
+      try {
+        const usersSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
+        const list = usersSnap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            const email = safeLower(data?.email);
+            return { uid: d.id, email };
+          })
+          .filter((x) => Boolean(x.email));
+
+        // opcional: sacar mi propio email del combo, si no te sirve
+        // const meEmail = safeLower(u.email);
+        // const listFiltered = list.filter((x) => x.email !== meEmail);
+
+        setLawyerOptions(list);
+      } catch {
+        setLawyerOptions([]);
       }
 
       try {
@@ -200,7 +223,7 @@ export default function MyCasesPage() {
           orderBy("__name__")
         );
 
-        // 3) Invitaciones donde fui invitado
+        // 3) Invitaciones donde fui invitado (para traer casos que no estén en 1/2)
         const qInvitesBase = query(
           collectionGroup(db, "invites"),
           where("invitedUid", "==", u.uid),
@@ -237,7 +260,7 @@ export default function MyCasesPage() {
           })
         );
 
-        // orden inicial (igual que antes)
+        // orden inicial
         const list = Array.from(byId.values()).sort((a, b) => {
           const as = a.createdAt?.seconds ?? 0;
           const bs = b.createdAt?.seconds ?? 0;
@@ -245,8 +268,6 @@ export default function MyCasesPage() {
         });
 
         setRows(list);
-
-        // ✅ reset paginación al cargar
         setPage(1);
       } catch (e: any) {
         setMsg(e?.message ?? "Error cargando mis causas");
@@ -258,7 +279,7 @@ export default function MyCasesPage() {
     return () => unsub();
   }, [router]);
 
-  // nombres de especialidades (lookup)
+  // nombres de especialidades
   useEffect(() => {
     const ids = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
     const missing = ids.filter((id) => !specialtyNameById[id]);
@@ -284,28 +305,38 @@ export default function MyCasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
-  // ✅ cuando cambia email creador: resolver UID
+  // ✅ resolver “compartido con” email -> uid
   useEffect(() => {
-    (async () => {
-      const email = safeLower(filterCreatorEmail);
-      if (!email) {
-        setCreatorUidFilter(null);
-      } else {
-        try {
-          const uid = await resolveCreatorUidByEmailExact(email);
-          setCreatorUidFilter(uid);
-        } catch {
-          setCreatorUidFilter("__none__");
-        }
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterCreatorEmail]);
+    if (filterSharedWithEmail === "all") {
+      setSharedWithUidFilter(null);
+      return;
+    }
+    const found = lawyerOptions.find((x) => x.email === safeLower(filterSharedWithEmail));
+    setSharedWithUidFilter(found?.uid ?? "__none__");
+  }, [filterSharedWithEmail, lawyerOptions]);
 
-  // ✅ si cambian filtros/orden/búsqueda: volver a pág 1
+  // reset a página 1 si cambian filtros
   useEffect(() => {
     setPage(1);
-  }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir, searchCaratula]);
+  }, [
+    filterStatus,
+    filterJur,
+    filterSpecialtyId,
+    sharedWithUidFilter,
+    orderField,
+    orderDir,
+    searchCaratula,
+  ]);
+
+  // helper participantes por causa
+  const caseParticipants = (r: CaseRow) => {
+    // prioridad a participantsUids si existe
+    const p = Array.isArray(r.participantsUids) ? r.participantsUids : [];
+    if (p.length) return uniq(p);
+
+    // fallback: broughtByUid + confirmedAssigneesUids
+    return uniq([String(r.broughtByUid ?? ""), ...((r.confirmedAssigneesUids ?? []) as string[])]);
+  };
 
   const filteredSorted = useMemo(() => {
     const s = safeLower(searchCaratula);
@@ -315,9 +346,12 @@ export default function MyCasesPage() {
       if (filterJur !== "all" && String(r.jurisdiccion ?? "") !== filterJur) return false;
       if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId)
         return false;
-      if (creatorUidFilter) {
-        if (creatorUidFilter === "__none__") return false;
-        if (String(r.broughtByUid ?? "") !== creatorUidFilter) return false;
+
+      // ✅ compartido con
+      if (sharedWithUidFilter) {
+        if (sharedWithUidFilter === "__none__") return false;
+        const parts = caseParticipants(r);
+        if (!parts.includes(sharedWithUidFilter)) return false;
       }
 
       if (s) {
@@ -348,7 +382,7 @@ export default function MyCasesPage() {
     filterStatus,
     filterJur,
     filterSpecialtyId,
-    creatorUidFilter,
+    sharedWithUidFilter,
     orderField,
     orderDir,
     searchCaratula,
@@ -375,7 +409,7 @@ export default function MyCasesPage() {
     setFilterStatus("all");
     setFilterJur("all");
     setFilterSpecialtyId("all");
-    setFilterCreatorEmail("");
+    setFilterSharedWithEmail("all");
     setSearchCaratula("");
     setOrderField("createdAt");
     setOrderDir("desc");
@@ -419,7 +453,7 @@ export default function MyCasesPage() {
         </div>
       </div>
 
-      {/* Filtros / orden (igual estilo “Todas las causas”) */}
+      {/* Filtros / orden */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -467,14 +501,21 @@ export default function MyCasesPage() {
               </select>
             </label>
 
+            {/* ✅ NUEVO: compartido con */}
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
-              Creador (email exacto){" "}
-              <input
-                value={filterCreatorEmail}
-                onChange={(e) => setFilterCreatorEmail(e.target.value)}
-                placeholder="ej: abogado@estudio.com"
-                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
-              />
+              Compartido con{" "}
+              <select
+                value={filterSharedWithEmail}
+                onChange={(e) => setFilterSharedWithEmail(e.target.value)}
+                className="ml-2 min-w-[260px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="all">Todos</option>
+                {lawyerOptions.map((l) => (
+                  <option key={l.uid} value={l.email}>
+                    {l.email}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
@@ -568,12 +609,18 @@ export default function MyCasesPage() {
                           {specialtyNameById[r.specialtyId] ?? r.specialtyId}
                         </span>{" "}
                         · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
-                        <span className="font-bold">{formatDateFromSeconds(r.createdAt?.seconds)}</span>
+                        <span className="font-bold">
+                          {formatDateFromSeconds(r.createdAt?.seconds)}
+                        </span>
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
+                      {r.status === "assigned" ? (
+                        <Badge tone="ok">ASIGNADA</Badge>
+                      ) : (
+                        <Badge>PENDIENTE</Badge>
+                      )}
                       <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
                         {missing > 0
                           ? `faltan ${missing} (${confirmed}/${required})`
@@ -597,7 +644,7 @@ export default function MyCasesPage() {
         </div>
       ) : null}
 
-      {/* ✅ Paginación (25) */}
+      {/* Paginación */}
       {!loading && !msg ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -622,10 +669,10 @@ export default function MyCasesPage() {
         </div>
       ) : null}
 
-      {filterCreatorEmail ? (
+      {lawyerOptions.length === 0 ? (
         <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
-          Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
-          ahora).
+          Nota: no pude cargar la lista de abogados (users). Revisá reglas de Firestore para permitir leer
+          emails de usuarios del estudio.
         </div>
       ) : null}
     </AppShell>
