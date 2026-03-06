@@ -55,6 +55,7 @@ export default function NewCasePage() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  // mínimo requerido, no máximo
   const requiredDirectCount = broughtByParticipates ? 1 : 2;
   const directAssigneesSet = useMemo(() => new Set(directAssignees), [directAssignees]);
 
@@ -118,20 +119,11 @@ export default function NewCasePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady]);
 
-  useEffect(() => {
-    if (assignmentMode !== "direct") return;
-    if (directAssignees.length > requiredDirectCount) {
-      setDirectAssignees(directAssignees.slice(0, requiredDirectCount));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broughtByParticipates, assignmentMode]);
-
   function toggleDirectAssignee(targetUid: string) {
     setMsg(null);
     setDirectAssignees((prev) => {
       const exists = prev.includes(targetUid);
       if (exists) return prev.filter((x) => x !== targetUid);
-      if (prev.length >= requiredDirectCount) return prev;
       return [...prev, targetUid];
     });
   }
@@ -144,8 +136,8 @@ export default function NewCasePage() {
     if (!resumen.trim()) return "Completá el resumen.";
 
     if (assignmentMode === "direct") {
-      if (directAssignees.length !== requiredDirectCount) {
-        return `En asignación directa, debés elegir ${requiredDirectCount} abogado(s).`;
+      if (directAssignees.length < requiredDirectCount) {
+        return `En asignación directa, debés elegir al menos ${requiredDirectCount} abogado(s).`;
       }
       if (!directJustification.trim() || directJustification.trim().length < 10) {
         return "La justificación es obligatoria (mínimo 10 caracteres).";
@@ -193,7 +185,13 @@ export default function NewCasePage() {
 
   if (!authReady) {
     return (
-      <AppShell title="Nueva causa" userEmail={user?.email ?? null} role={role} pendingInvites={pendingInvites} onLogout={doLogout}>
+      <AppShell
+        title="Nueva causa"
+        userEmail={user?.email ?? null}
+        role={role}
+        pendingInvites={pendingInvites}
+        onLogout={doLogout}
+      >
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...
         </div>
@@ -211,7 +209,13 @@ export default function NewCasePage() {
     "rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900";
 
   return (
-    <AppShell title="Nueva causa" userEmail={user?.email ?? null} role={role} pendingInvites={pendingInvites} onLogout={doLogout}>
+    <AppShell
+      title="Nueva causa"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+    >
       <div className="mb-4">
         <h1 className="text-xl font-black text-gray-900 dark:text-gray-100">Nueva causa</h1>
         <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">
@@ -221,13 +225,25 @@ export default function NewCasePage() {
 
       <form onSubmit={handleSubmit} className="grid gap-4">
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Carátula tentativa</span>
-          <input value={caratulaTentativa} onChange={(e) => setCaratulaTentativa(e.target.value)} className={inputCls} />
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+            Carátula tentativa
+          </span>
+          <input
+            value={caratulaTentativa}
+            onChange={(e) => setCaratulaTentativa(e.target.value)}
+            className={inputCls}
+          />
         </label>
 
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Materia (especialidad)</span>
-          <select value={specialtyId} onChange={(e) => setSpecialtyId(e.target.value)} className={selectCls}>
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+            Materia (especialidad)
+          </span>
+          <select
+            value={specialtyId}
+            onChange={(e) => setSpecialtyId(e.target.value)}
+            className={selectCls}
+          >
             {specialties.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -238,17 +254,31 @@ export default function NewCasePage() {
 
         <label className="grid gap-2">
           <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Objeto</span>
-          <textarea value={objeto} onChange={(e) => setObjeto(e.target.value)} className={inputCls + " min-h-[96px]"} />
+          <textarea
+            value={objeto}
+            onChange={(e) => setObjeto(e.target.value)}
+            className={inputCls + " min-h-[96px]"}
+          />
         </label>
 
         <label className="grid gap-2">
           <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Resumen</span>
-          <textarea value={resumen} onChange={(e) => setResumen(e.target.value)} className={inputCls + " min-h-[96px]"} />
+          <textarea
+            value={resumen}
+            onChange={(e) => setResumen(e.target.value)}
+            className={inputCls + " min-h-[96px]"}
+          />
         </label>
 
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Jurisdicción</span>
-          <select value={jurisdiccion} onChange={(e) => setJurisdiccion(e.target.value as Jurisdiccion)} className={selectCls}>
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+            Jurisdicción
+          </span>
+          <select
+            value={jurisdiccion}
+            onChange={(e) => setJurisdiccion(e.target.value as Jurisdiccion)}
+            className={selectCls}
+          >
             <option value="nacional">Nacional</option>
             <option value="federal">Federal</option>
             <option value="caba">CABA</option>
@@ -257,22 +287,43 @@ export default function NewCasePage() {
         </label>
 
         <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 text-sm dark:border-gray-800 dark:bg-gray-900">
-          <input type="checkbox" checked={broughtByParticipates} onChange={(e) => setBroughtByParticipates(e.target.checked)} className="h-4 w-4" />
-          <span className="font-extrabold text-gray-900 dark:text-gray-100">Voy a participar directamente en la causa</span>
+          <input
+            type="checkbox"
+            checked={broughtByParticipates}
+            onChange={(e) => setBroughtByParticipates(e.target.checked)}
+            className="h-4 w-4"
+          />
+          <span className="font-extrabold text-gray-900 dark:text-gray-100">
+            Voy a participar directamente en la causa
+          </span>
         </label>
 
         <div className={cardCls}>
-          <div className="text-sm font-black text-gray-900 dark:text-gray-100">Modo de asignación</div>
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Modo de asignación
+          </div>
 
           <div className="mt-3 grid gap-2">
             <label className="flex items-center gap-3 text-sm text-gray-900 dark:text-gray-100">
-              <input type="radio" name="assignmentMode" checked={assignmentMode === "auto"} onChange={() => setAssignmentMode("auto")} className="h-4 w-4" />
+              <input
+                type="radio"
+                name="assignmentMode"
+                checked={assignmentMode === "auto"}
+                onChange={() => setAssignmentMode("auto")}
+                className="h-4 w-4"
+              />
               <span className="font-extrabold">Asignación automática</span>
               <span className="text-gray-600 dark:text-gray-400">(turno estricto)</span>
             </label>
 
             <label className="flex items-center gap-3 text-sm text-gray-900 dark:text-gray-100">
-              <input type="radio" name="assignmentMode" checked={assignmentMode === "direct"} onChange={() => setAssignmentMode("direct")} className="h-4 w-4" />
+              <input
+                type="radio"
+                name="assignmentMode"
+                checked={assignmentMode === "direct"}
+                onChange={() => setAssignmentMode("direct")}
+                className="h-4 w-4"
+              />
               <span className="font-extrabold">Asignación directa</span>
               <span className="text-gray-600 dark:text-gray-400">(con justificación)</span>
             </label>
@@ -281,17 +332,24 @@ export default function NewCasePage() {
           {assignmentMode === "direct" && (
             <div className="mt-4 grid gap-3">
               <div className="text-sm text-gray-700 dark:text-gray-300">
-                Elegí <span className="font-black">{requiredDirectCount}</span> abogado(s):
+                Elegí al menos <span className="font-black">{requiredDirectCount}</span> abogado(s):
               </div>
 
               <div className="max-h-[260px] overflow-auto rounded-xl border border-gray-200 p-3 dark:border-gray-800">
                 {practicingUsers.map((u) => {
                   const checked = directAssigneesSet.has(u.uid);
-                  const disabled = !checked && directAssignees.length >= requiredDirectCount;
 
                   return (
-                    <label key={u.uid} className="flex items-center gap-3 py-1 text-sm text-gray-900 dark:text-gray-100">
-                      <input type="checkbox" checked={checked} onChange={() => toggleDirectAssignee(u.uid)} disabled={disabled} className="h-4 w-4 disabled:opacity-60" />
+                    <label
+                      key={u.uid}
+                      className="flex items-center gap-3 py-1 text-sm text-gray-900 dark:text-gray-100"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDirectAssignee(u.uid)}
+                        className="h-4 w-4"
+                      />
                       <span className="font-semibold">{u.email}</span>
                       <span className="text-gray-500 dark:text-gray-400">({u.role})</span>
                     </label>
@@ -299,9 +357,19 @@ export default function NewCasePage() {
                 })}
               </div>
 
+              <div className="text-xs text-gray-600 dark:text-gray-400">
+                Seleccionados: <span className="font-black">{directAssignees.length}</span>
+              </div>
+
               <label className="grid gap-2">
-                <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Justificación</span>
-                <textarea value={directJustification} onChange={(e) => setDirectJustification(e.target.value)} className={inputCls + " min-h-[88px]"} />
+                <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+                  Justificación
+                </span>
+                <textarea
+                  value={directJustification}
+                  onChange={(e) => setDirectJustification(e.target.value)}
+                  className={inputCls + " min-h-[88px]"}
+                />
               </label>
 
               <div className="text-xs text-gray-600 dark:text-gray-400">

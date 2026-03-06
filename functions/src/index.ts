@@ -170,26 +170,35 @@ export const createCaseWithInvites = onCall(
     // Determinar a quién invitar (UIDs)
     let inviteUids: string[] = [];
 
-    if (assignmentMode === "direct") {
-      const just = String(data?.directJustification ?? "").trim();
-      const direct = uniq((data?.directAssigneesUids ?? []).map(String));
+   if (assignmentMode === "direct") {
+  const just = String(data?.directJustification ?? "").trim();
+  const direct = uniq(
+    (data?.directAssigneesUids ?? [])
+      .map((x) => String(x).trim())
+      .filter(Boolean)
+  );
 
-      const requiredInvites = broughtByParticipates ? 1 : 2;
+  const requiredInvites = broughtByParticipates ? 1 : 2;
 
-      if (direct.length !== requiredInvites) {
-        throw new HttpsError("invalid-argument", `Asignación directa requiere ${requiredInvites} invitado(s).`);
-      }
-      if (just.length < 10) {
-        throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
-      }
+  if (direct.length < requiredInvites) {
+    throw new HttpsError(
+      "invalid-argument",
+      `Asignación directa requiere al menos ${requiredInvites} invitado(s).`
+    );
+  }
+  if (just.length < 10) {
+    throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
+  }
 
-      // No permitir invitarse a uno mismo
-      if (direct.includes(creatorUid)) {
-        throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
-      }
+  // No permitir invitarse a uno mismo
+  if (direct.includes(creatorUid)) {
+    throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
+  }
 
-      inviteUids = direct;
-    } else {
+  inviteUids = direct;
+}
+
+else {
       // AUTO: turno estricto por especialidad
       const needed = requiredAssigneesCount - confirmedAssigneesUids.length; // 1 o 2
       if (needed <= 0) {

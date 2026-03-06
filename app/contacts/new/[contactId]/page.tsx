@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -18,8 +18,17 @@ import {
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 
+type PersonType = "fisica" | "juridica";
+
 function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
+}
+
+function buildFullName(personType: PersonType, name: string, lastName: string) {
+  if (personType === "juridica") {
+    return String(name ?? "").trim();
+  }
+  return `${String(name ?? "").trim()} ${String(lastName ?? "").trim()}`.trim();
 }
 
 export default function ContactEditPage() {
@@ -35,7 +44,9 @@ export default function ContactEditPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const [personType, setPersonType] = useState<PersonType>("fisica");
   const [name, setName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [docIdValue, setDocIdValue] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -91,9 +102,18 @@ export default function ContactEditPage() {
           setLoading(false);
           return;
         }
+
         const data = snap.data() as any;
+
+        const storedPersonType =
+          String(data?.personType ?? "").trim() === "juridica" ? "juridica" : "fisica";
+
+        setPersonType(storedPersonType);
         setName(String(data?.name ?? ""));
-        setDocIdValue(String(data?.docId ?? ""));
+        setLastName(String(data?.lastName ?? ""));
+        setDocIdValue(
+          String(data?.docId ?? data?.dni ?? data?.cuit ?? "")
+        );
         setEmail(String(data?.email ?? ""));
         setPhone(String(data?.phone ?? ""));
         setAddress(String(data?.address ?? ""));
@@ -105,27 +125,58 @@ export default function ContactEditPage() {
     })();
   }, [user, contactId]);
 
+  useEffect(() => {
+    if (personType === "juridica") {
+      setLastName("");
+    }
+  }, [personType]);
+
+  const fullName = useMemo(
+    () => buildFullName(personType, name, lastName),
+    [personType, name, lastName]
+  );
+
   async function save() {
     if (!user) return;
     setMsg(null);
 
     const n = name.trim();
+    const ln = lastName.trim();
+
     if (!n) {
-      setMsg("El nombre es obligatorio.");
+      setMsg(personType === "juridica" ? "La razón social es obligatoria." : "El nombre es obligatorio.");
+      return;
+    }
+
+    if (personType === "fisica" && !ln) {
+      setMsg("El apellido es obligatorio.");
       return;
     }
 
     setSaving(true);
     try {
-      await updateDoc(doc(db, "contacts", contactId), {
+      const payload: any = {
+        personType,
         name: n,
-        nameLower: safeLower(n),
+        lastName: personType === "fisica" ? ln : "",
+        fullName: fullName.trim(),
+        nameLower: safeLower(fullName),
         docId: docIdValue.trim(),
         email: email.trim(),
         phone: phone.trim(),
         address: address.trim(),
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      if (personType === "fisica") {
+        payload.dni = docIdValue.trim();
+      } else {
+        payload.cuit = docIdValue.trim();
+        payload.dni = "";
+      }
+
+      await updateDoc(doc(db, "contacts", contactId), payload);
+      setMsg("Cambios guardados.");
     } catch (e: any) {
       setMsg(e?.message ?? "Error guardando");
     } finally {
@@ -165,7 +216,21 @@ export default function ContactEditPage() {
         <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1 md:col-span-2">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre *</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Tipo de persona</span>
+              <select
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={personType}
+                onChange={(e) => setPersonType(e.target.value as PersonType)}
+              >
+                <option value="fisica">Persona física</option>
+                <option value="juridica">Persona jurídica</option>
+              </select>
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                {personType === "juridica" ? "Nombre / Razón social *" : "Nombre *"}
+              </span>
               <input
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={name}
@@ -173,8 +238,23 @@ export default function ContactEditPage() {
               />
             </label>
 
+            {personType === "fisica" ? (
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Apellido *</span>
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                />
+              </label>
+            ) : (
+              <div />
+            )}
+
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI/CUIT</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                {personType === "fisica" ? "DNI/CUIT" : "CUIT"}
+              </span>
               <input
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={docIdValue}

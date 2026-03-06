@@ -124,6 +124,13 @@ function valueOrDash(v?: string | null) {
   return s ? s : "-";
 }
 
+function normalizeUrl(url?: string | null) {
+  const raw = String(url ?? "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
 const STATUS_LABEL: Record<CaseStatus, string> = {
   preliminar: "Preliminar",
   iniciada: "Iniciada",
@@ -232,6 +239,7 @@ export default function ManageCasePage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const [involvedEmails, setInvolvedEmails] = useState<string[]>([]);
+  const [assignedLawyerEmails, setAssignedLawyerEmails] = useState<string[]>([]);
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
   const [metaDraft, setMetaDraft] = useState<Partial<ManagementMeta>>({});
@@ -389,24 +397,42 @@ export default function ManageCasePage() {
 
     (async () => {
       try {
-        const uids = Array.from(
+        const assignedUids = Array.from(new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean)));
+        const involvedUids = Array.from(
           new Set([...(caseDoc.confirmedAssigneesUids ?? []), caseDoc.broughtByUid ?? ""].filter(Boolean))
         );
 
-        if (uids.length === 0) {
+        if (involvedUids.length === 0) {
           setInvolvedEmails([]);
+          setAssignedLawyerEmails([]);
           return;
         }
 
-        const docs = await Promise.all(uids.map((uid) => getDoc(doc(db, "users", uid))));
-        const emails = docs
+        const involvedDocs = await Promise.all(involvedUids.map((uid) => getDoc(doc(db, "users", uid))));
+        const involved = involvedDocs
           .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
           .map((e) => String(e).trim())
           .filter(Boolean);
 
-        setInvolvedEmails(Array.from(new Set(emails)));
+        setInvolvedEmails(Array.from(new Set(involved)));
+
+        if (assignedUids.length === 0) {
+          setAssignedLawyerEmails([]);
+          return;
+        }
+
+        const assignedDocs = await Promise.all(
+          assignedUids.map((uid) => getDoc(doc(db, "users", uid)))
+        );
+        const assigned = assignedDocs
+          .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
+          .map((e) => String(e).trim())
+          .filter(Boolean);
+
+        setAssignedLawyerEmails(Array.from(new Set(assigned)));
       } catch {
         setInvolvedEmails([]);
+        setAssignedLawyerEmails([]);
       }
     })();
   }, [caseDoc]);
@@ -859,6 +885,8 @@ export default function ManageCasePage() {
     ? "Solicitud de archivo realizada"
     : "Solicitar archivo de la causa";
 
+  const driveFolderHref = normalizeUrl(meta?.driveFolderUrl);
+
   return (
     <AppShell
       title="Gestionar causa"
@@ -955,10 +983,24 @@ export default function ManageCasePage() {
                   <span className="font-black">Carpeta física:</span>{" "}
                   <span>{valueOrDash(meta?.physicalFolder)}</span>
                 </div>
+
                 <div>
                   <span className="font-black">Vínculo carpeta Drive:</span>{" "}
-                  <span className="break-all">{valueOrDash(meta?.driveFolderUrl)}</span>
+                  {driveFolderHref ? (
+                    <a
+                      href={driveFolderHref}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="break-all font-extrabold text-blue-700 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                      title="Abrir carpeta de Google Drive"
+                    >
+                      {meta?.driveFolderUrl}
+                    </a>
+                  ) : (
+                    <span className="break-all">{valueOrDash(meta?.driveFolderUrl)}</span>
+                  )}
                 </div>
+
                 <div>
                   <span className="font-black">Nº expediente:</span>{" "}
                   <span>{valueOrDash(meta?.expedienteNumber)}</span>
@@ -980,6 +1022,14 @@ export default function ManageCasePage() {
                 <div>
                   <span className="font-black">Estado:</span>{" "}
                   <span>{STATUS_LABEL[(meta?.status ?? "preliminar") as CaseStatus] ?? "-"}</span>
+                </div>
+                <div>
+                  <span className="font-black">Abogados asignados:</span>{" "}
+                  <span>
+                    {assignedLawyerEmails.length > 0
+                      ? assignedLawyerEmails.join(", ")
+                      : "-"}
+                  </span>
                 </div>
               </div>
             </div>

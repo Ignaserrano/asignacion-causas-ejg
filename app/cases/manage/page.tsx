@@ -23,7 +23,14 @@ import {
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 
-type CaseStatus = "draft" | "assigned" | "archived";
+type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
+type ProceduralStatus =
+  | "preliminar"
+  | "iniciada"
+  | "en_prueba"
+  | "a_sentencia"
+  | "en_apelacion"
+  | "en_ejecucion";
 
 type FirestoreDateLike = {
   seconds?: number;
@@ -34,7 +41,7 @@ type CaseRow = {
   caratulaTentativa: string;
   specialtyId: string;
   jurisdiccion: string;
-  status: CaseStatus;
+  status: MainCaseStatus;
   requiredAssigneesCount?: number;
   confirmedAssigneesUids?: string[];
   createdAt?: FirestoreDateLike;
@@ -44,13 +51,27 @@ type CaseRow = {
   // opcional si lo tenés
   participantsUids?: string[];
 
-  // nuevo: última entrada en bitácora
+  // bitácora
   lastLogAt?: FirestoreDateLike;
+
+  // management meta
+  expedienteNumber?: string;
+  court?: string;
+  proceduralStatus?: ProceduralStatus;
 };
 
 type SpecialtyDoc = { name?: string };
 
 const PAGE_SIZE = 25;
+
+const PROCEDURAL_STATUS_LABEL: Record<ProceduralStatus, string> = {
+  preliminar: "Preliminar",
+  iniciada: "Iniciada",
+  en_prueba: "En prueba",
+  a_sentencia: "A sentencia",
+  en_apelacion: "En apelación",
+  en_ejecucion: "En ejecución",
+};
 
 function uniq(arr: string[]) {
   return Array.from(new Set(arr.filter(Boolean)));
@@ -60,9 +81,19 @@ function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
 }
 
+function valueOrDash(v?: string | null) {
+  const s = String(v ?? "").trim();
+  return s ? s : "-";
+}
+
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
   return new Date(seconds * 1000).toLocaleString();
+}
+
+function formatProceduralStatus(status?: string) {
+  if (!status) return "-";
+  return PROCEDURAL_STATUS_LABEL[status as ProceduralStatus] ?? status;
 }
 
 function Badge({
@@ -70,13 +101,15 @@ function Badge({
   tone = "neutral",
 }: {
   children: React.ReactNode;
-  tone?: "neutral" | "ok" | "archived";
+  tone?: "neutral" | "ok" | "archived" | "warning";
 }) {
   const cls =
     tone === "ok"
       ? "bg-green-100 border-green-300 text-green-900 dark:bg-green-900/30 dark:border-green-700 dark:text-green-100"
       : tone === "archived"
       ? "bg-amber-100 border-amber-300 text-amber-900 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-100"
+      : tone === "warning"
+      ? "bg-orange-100 border-orange-300 text-orange-900 dark:bg-orange-900/30 dark:border-orange-700 dark:text-orange-100"
       : "bg-gray-100 border-gray-300 text-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100";
 
   return (
@@ -132,6 +165,29 @@ async function getLastLogAt(caseId: string): Promise<FirestoreDateLike | undefin
   }
 }
 
+async function getManagementMeta(caseId: string): Promise<{
+  expedienteNumber?: string;
+  court?: string;
+  proceduralStatus?: ProceduralStatus;
+}> {
+  try {
+    const snap = await getDoc(doc(db, "cases", caseId, "management", "meta"));
+    if (!snap.exists()) {
+      return {};
+    }
+
+    const data = snap.data() as any;
+
+    return {
+      expedienteNumber: String(data?.expedienteNumber ?? "").trim() || undefined,
+      court: String(data?.court ?? "").trim() || undefined,
+      proceduralStatus: (String(data?.status ?? "").trim() || undefined) as ProceduralStatus | undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
 export default function ManageCasesPage() {
   const router = useRouter();
 
@@ -156,9 +212,10 @@ export default function ManageCasesPage() {
   const [lawyerOptions, setLawyerOptions] = useState<Array<{ uid: string; email: string }>>([]);
 
   // filtros
-  const [filterStatus, setFilterStatus] = useState<"all" | CaseStatus>("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | MainCaseStatus>("all");
   const [filterJur, setFilterJur] = useState<string>("all");
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
+  const [filterProceduralStatus, setFilterProceduralStatus] = useState<"all" | ProceduralStatus>("all");
   const [showArchived, setShowArchived] = useState(false);
 
   // compartido con (email)
@@ -253,25 +310,31 @@ export default function ManageCasesPage() {
           ...(d.data() as any),
         })) as CaseRow[];
 
-        // cargar última entrada de bitácora por cada causa
-        const listWithLastLog = await Promise.all(
+        const enrichedList = await Promise.all(
           rawList.map(async (item) => {
-            const lastLogAt = await getLastLogAt(item.id);
+            const [lastLogAt, meta] = await Promise.all([
+              getLastLogAt(item.id),
+              getManagementMeta(item.id),
+            ]);
+
             return {
               ...item,
               lastLogAt,
+              expedienteNumber: meta.expedienteNumber,
+              court: meta.court,
+              proceduralStatus: meta.proceduralStatus,
             };
           })
         );
 
         // orden inicial: última entrada de bitácora desc
-        listWithLastLog.sort((a, b) => {
+        enrichedList.sort((a, b) => {
           const as = Number(a.lastLogAt?.seconds ?? 0);
           const bs = Number(b.lastLogAt?.seconds ?? 0);
           return bs - as;
         });
 
-        setRows(listWithLastLog);
+        setRows(enrichedList);
         setPage(1);
       } catch (e: any) {
         console.error("ERROR cargando causas para gestionar:", e);
@@ -334,6 +397,7 @@ export default function ManageCasesPage() {
     filterStatus,
     filterJur,
     filterSpecialtyId,
+    filterProceduralStatus,
     sharedWithUidFilter,
     orderField,
     orderDir,
@@ -357,8 +421,15 @@ export default function ManageCasesPage() {
 
       if (filterStatus !== "all" && r.status !== filterStatus) return false;
       if (filterJur !== "all" && String(r.jurisdiccion ?? "") !== filterJur) return false;
-      if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId)
+      if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId) {
         return false;
+      }
+      if (
+        filterProceduralStatus !== "all" &&
+        String(r.proceduralStatus ?? "") !== filterProceduralStatus
+      ) {
+        return false;
+      }
 
       // compartido con
       if (sharedWithUidFilter) {
@@ -395,6 +466,7 @@ export default function ManageCasesPage() {
     filterStatus,
     filterJur,
     filterSpecialtyId,
+    filterProceduralStatus,
     sharedWithUidFilter,
     orderField,
     orderDir,
@@ -423,6 +495,7 @@ export default function ManageCasesPage() {
     setFilterStatus("all");
     setFilterJur("all");
     setFilterSpecialtyId("all");
+    setFilterProceduralStatus("all");
     setFilterSharedWithEmail("all");
     setSearchCaratula("");
     setOrderField("lastLogAt");
@@ -473,7 +546,25 @@ export default function ManageCasesPage() {
                 <option value="all">Todos</option>
                 <option value="draft">Pendiente</option>
                 <option value="assigned">Asignada</option>
+                <option value="archsolicited">Archivo solicitado</option>
                 {showArchived ? <option value="archived">Archivada</option> : null}
+              </select>
+            </label>
+
+            <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              Estado procesal{" "}
+              <select
+                value={filterProceduralStatus}
+                onChange={(e) => setFilterProceduralStatus(e.target.value as any)}
+                className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="all">Todos</option>
+                <option value="preliminar">Preliminar</option>
+                <option value="iniciada">Iniciada</option>
+                <option value="en_prueba">En prueba</option>
+                <option value="a_sentencia">A sentencia</option>
+                <option value="en_apelacion">En apelación</option>
+                <option value="en_ejecucion">En ejecución</option>
               </select>
             </label>
 
@@ -619,29 +710,36 @@ export default function ManageCasesPage() {
                             Archivada · {formatDateFromSeconds(r.archivedAt?.seconds)}
                           </Badge>
                         ) : null}
+
+                        {r.status === "archsolicited" ? (
+                          <Badge tone="warning">Archivo solicitado</Badge>
+                        ) : null}
                       </div>
 
-                      <div className="mt-1 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-700 dark:text-gray-200">
-                        <div>
-                          Materia:{" "}
-                          <span className="font-bold">
-                            {specialtyNameById[r.specialtyId] ?? r.specialtyId}
-                          </span>{" "}
-                          · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> ·
-                          Última bitácora:{" "}
-                          <span className="font-bold">
-                            {formatDateFromSeconds(r.lastLogAt?.seconds)}
-                          </span>
-                        </div>
+                      <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
+                        Materia:{" "}
+                        <span className="font-bold">
+                          {specialtyNameById[r.specialtyId] ?? r.specialtyId}
+                        </span>{" "}
+                        · Jurisdicción: <span className="font-bold">{valueOrDash(r.jurisdiccion)}</span> ·
+                        Estado procesal:{" "}
+                        <span className="font-bold">{formatProceduralStatus(r.proceduralStatus)}</span> ·
+                        Última bitácora:{" "}
+                        <span className="font-bold">{formatDateFromSeconds(r.lastLogAt?.seconds)}</span>
+                      </div>
 
-                        <Link
-                          href={`/cases/manage/${r.id}`}
-                          className="shrink-0 rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
-                        >
-                          Gestionar
-                        </Link>
+                      <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
+                        Nº expte.: <span className="font-bold">{valueOrDash(r.expedienteNumber)}</span> ·
+                        Dependencia: <span className="font-bold">{valueOrDash(r.court)}</span>
                       </div>
                     </div>
+
+                    <Link
+                      href={`/cases/manage/${r.id}`}
+                      className="shrink-0 rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+                    >
+                      Gestionar
+                    </Link>
                   </div>
                 </div>
               );

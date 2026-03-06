@@ -26,6 +26,8 @@ type ContactType =
   | "perito"
   | "otro";
 
+type PersonType = "fisica" | "juridica";
+
 type CivilStatus =
   | "soltero"
   | "casado"
@@ -38,7 +40,10 @@ function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
 }
 
-function buildFullName(name: string, lastName: string) {
+function buildFullName(personType: PersonType, name: string, lastName: string) {
+  if (personType === "juridica") {
+    return String(name ?? "").trim();
+  }
   return `${String(name ?? "").trim()} ${String(lastName ?? "").trim()}`.trim();
 }
 
@@ -50,6 +55,7 @@ export default function ContactNewPage() {
   const [pendingInvites, setPendingInvites] = useState(0);
 
   const [type, setType] = useState<ContactType>("cliente");
+  const [personType, setPersonType] = useState<PersonType>("fisica");
 
   const [name, setName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -105,23 +111,38 @@ export default function ContactNewPage() {
     return () => unsub();
   }, [router]);
 
+  useEffect(() => {
+    if (personType === "juridica") {
+      setLastName("");
+      setBirthDate("");
+      setCivilStatus("soltero");
+      setMarriageCount("");
+      setSpouseName("");
+      setNationality("");
+      setDni("");
+    }
+  }, [personType]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
   }
 
-  const fullName = useMemo(() => buildFullName(name, lastName), [name, lastName]);
+  const fullName = useMemo(
+    () => buildFullName(personType, name, lastName),
+    [personType, name, lastName]
+  );
 
   async function save() {
     if (!user) return;
     setMsg(null);
 
     if (!name.trim()) {
-      setMsg("El nombre es obligatorio.");
+      setMsg(personType === "juridica" ? "La razón social es obligatoria." : "El nombre es obligatorio.");
       return;
     }
 
-    if (!lastName.trim() && type !== "otro") {
+    if (personType === "fisica" && !lastName.trim() && type !== "otro") {
       setMsg("El apellido es obligatorio.");
       return;
     }
@@ -130,12 +151,13 @@ export default function ContactNewPage() {
     try {
       const payload: any = {
         type,
+        personType,
         name: name.trim(),
-        lastName: lastName.trim(),
-        fullName,
+        lastName: personType === "fisica" ? lastName.trim() : "",
+        fullName: fullName.trim(),
         nameLower: safeLower(fullName),
         address: address.trim(),
-        dni: dni.trim(),
+        dni: personType === "fisica" ? dni.trim() : "",
         cuit: cuit.trim(),
         phone: phone.trim(),
         email: email.trim(),
@@ -146,11 +168,13 @@ export default function ContactNewPage() {
       };
 
       if (type === "cliente") {
-        payload.nationality = nationality.trim();
-        payload.birthDate = birthDate || "";
-        payload.civilStatus = civilStatus;
-        payload.marriageCount = civilStatus === "casado" ? marriageCount.trim() : "";
-        payload.spouseName = civilStatus === "casado" ? spouseName.trim() : "";
+        payload.nationality = personType === "fisica" ? nationality.trim() : "";
+        payload.birthDate = personType === "fisica" ? birthDate || "" : "";
+        payload.civilStatus = personType === "fisica" ? civilStatus : "";
+        payload.marriageCount =
+          personType === "fisica" && civilStatus === "casado" ? marriageCount.trim() : "";
+        payload.spouseName =
+          personType === "fisica" && civilStatus === "casado" ? spouseName.trim() : "";
         payload.referredBy = referredBy.trim();
       }
 
@@ -159,7 +183,7 @@ export default function ContactNewPage() {
       }
 
       if (type === "demandado") {
-        payload.nationality = nationality.trim();
+        payload.nationality = personType === "fisica" ? nationality.trim() : "";
       }
 
       if (type === "conciliador") {
@@ -211,9 +235,23 @@ export default function ContactNewPage() {
             </select>
           </label>
 
+          <label className="grid gap-1">
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Tipo de persona</span>
+            <select
+              value={personType}
+              onChange={(e) => setPersonType(e.target.value as PersonType)}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+            >
+              <option value="fisica">Persona física</option>
+              <option value="juridica">Persona jurídica</option>
+            </select>
+          </label>
+
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre *</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                {personType === "juridica" ? "Nombre / Razón social *" : "Nombre *"}
+              </span>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -221,96 +259,115 @@ export default function ContactNewPage() {
               />
             </label>
 
-            <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Apellido {type !== "otro" ? "*" : ""}</span>
-              <input
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              />
-            </label>
+            {personType === "fisica" ? (
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Apellido {type !== "otro" ? "*" : ""}
+                </span>
+                <input
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                />
+              </label>
+            ) : (
+              <div />
+            )}
           </div>
 
           {type === "cliente" && (
             <>
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
-                  <input
-                    value={nationality}
-                    onChange={(e) => setNationality(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
+              {personType === "fisica" ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
+                      <input
+                        value={nationality}
+                        onChange={(e) => setNationality(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
 
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fecha de nacimiento</span>
-                  <input
-                    type="date"
-                    value={birthDate}
-                    onChange={(e) => setBirthDate(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
-              </div>
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fecha de nacimiento</span>
+                      <input
+                        type="date"
+                        value={birthDate}
+                        onChange={(e) => setBirthDate(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+                  </div>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
-                  <input
-                    value={dni}
-                    onChange={(e) => setDni(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                      <input
+                        value={dni}
+                        onChange={(e) => setDni(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
 
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                      <input
+                        value={cuit}
+                        onChange={(e) => setCuit(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Estado civil</span>
+                    <select
+                      value={civilStatus}
+                      onChange={(e) => setCivilStatus(e.target.value as CivilStatus)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                    >
+                      <option value="soltero">Soltero</option>
+                      <option value="casado">Casado</option>
+                      <option value="divorciado">Divorciado</option>
+                      <option value="viudo">Viudo</option>
+                      <option value="separado_hecho">Separado de hecho</option>
+                      <option value="concubinato">En concubinato</option>
+                    </select>
+                  </label>
+
+                  {civilStatus === "casado" && (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="grid gap-1">
+                        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">En ... nupcias</span>
+                        <input
+                          value={marriageCount}
+                          onChange={(e) => setMarriageCount(e.target.value)}
+                          placeholder="Ej: primeras / segundas"
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre cónyuge</span>
+                        <input
+                          value={spouseName}
+                          onChange={(e) => setSpouseName(e.target.value)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                        />
+                      </label>
+                    </div>
+                  )}
+                </>
+              ) : (
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
                   <input
                     value={cuit}
                     onChange={(e) => setCuit(e.target.value)}
                     className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   />
                 </label>
-              </div>
-
-              <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Estado civil</span>
-                <select
-                  value={civilStatus}
-                  onChange={(e) => setCivilStatus(e.target.value as CivilStatus)}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                >
-                  <option value="soltero">Soltero</option>
-                  <option value="casado">Casado</option>
-                  <option value="divorciado">Divorciado</option>
-                  <option value="viudo">Viudo</option>
-                  <option value="separado_hecho">Separado de hecho</option>
-                  <option value="concubinato">En concubinato</option>
-                </select>
-              </label>
-
-              {civilStatus === "casado" && (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">En ... nupcias</span>
-                    <input
-                      value={marriageCount}
-                      onChange={(e) => setMarriageCount(e.target.value)}
-                      placeholder="Ej: primeras / segundas"
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                    />
-                  </label>
-
-                  <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre cónyuge</span>
-                    <input
-                      value={spouseName}
-                      onChange={(e) => setSpouseName(e.target.value)}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                    />
-                  </label>
-                </div>
               )}
 
               <label className="grid gap-1">
@@ -327,6 +384,85 @@ export default function ContactNewPage() {
           {type === "abogado_contraria" && (
             <>
               <div className="grid gap-3 md:grid-cols-2">
+                {personType === "fisica" ? (
+                  <>
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
+                      <input
+                        value={cuit}
+                        onChange={(e) => setCuit(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Matrícula</span>
+                      <input
+                        value={tuition}
+                        onChange={(e) => setTuition(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
+                      <input
+                        value={cuit}
+                        onChange={(e) => setCuit(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Matrícula / dato identificatorio</span>
+                      <input
+                        value={tuition}
+                        onChange={(e) => setTuition(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {type === "demandado" && (
+            <>
+              {personType === "fisica" ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
+                      <input
+                        value={nationality}
+                        onChange={(e) => setNationality(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+
+                    <label className="grid gap-1">
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                      <input
+                        value={dni}
+                        onChange={(e) => setDni(e.target.value)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                    <input
+                      value={cuit}
+                      onChange={(e) => setCuit(e.target.value)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                    />
+                  </label>
+                </>
+              ) : (
                 <label className="grid gap-1">
                   <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
                   <input
@@ -335,66 +471,30 @@ export default function ContactNewPage() {
                     className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   />
                 </label>
-
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Matrícula</span>
-                  <input
-                    value={tuition}
-                    onChange={(e) => setTuition(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
-              </div>
-            </>
-          )}
-
-          {type === "demandado" && (
-            <>
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
-                  <input
-                    value={nationality}
-                    onChange={(e) => setNationality(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
-
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
-                  <input
-                    value={dni}
-                    onChange={(e) => setDni(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
-              </div>
-
-              <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
-                <input
-                  value={cuit}
-                  onChange={(e) => setCuit(e.target.value)}
-                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                />
-              </label>
+              )}
             </>
           )}
 
           {type === "conciliador" && (
             <>
               <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
-                  <input
-                    value={dni}
-                    onChange={(e) => setDni(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
+                {personType === "fisica" ? (
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                    <input
+                      value={dni}
+                      onChange={(e) => setDni(e.target.value)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                    />
+                  </label>
+                ) : (
+                  <div />
+                )}
 
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    {personType === "fisica" ? "CUIT/CUIL" : "CUIT"}
+                  </span>
                   <input
                     value={cuit}
                     onChange={(e) => setCuit(e.target.value)}
@@ -417,17 +517,23 @@ export default function ContactNewPage() {
           {type === "perito" && (
             <>
               <div className="grid gap-3 md:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
-                  <input
-                    value={dni}
-                    onChange={(e) => setDni(e.target.value)}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
-                </label>
+                {personType === "fisica" ? (
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                    <input
+                      value={dni}
+                      onChange={(e) => setDni(e.target.value)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                    />
+                  </label>
+                ) : (
+                  <div />
+                )}
 
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    {personType === "fisica" ? "CUIT/CUIL" : "CUIT"}
+                  </span>
                   <input
                     value={cuit}
                     onChange={(e) => setCuit(e.target.value)}
