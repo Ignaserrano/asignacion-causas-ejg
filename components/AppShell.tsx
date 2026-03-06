@@ -29,9 +29,175 @@ function Badge({
 
 type Tab = {
   href: string;
-  label: string;
+  label: string; // para tooltip / accesibilidad
   badge?: React.ReactNode;
+
+  // si icon existe, se renderiza como botón “solo ícono”
+  icon?: React.ReactNode;
+  iconOnly?: boolean;
 };
+
+// --- íconos inline (simples y consistentes) ---
+function IconHome({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 10.5 12 4l8 6.5V20a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 20v-9.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.5 21V14h5v7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconPlusDoc({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M9 21h6m-8-3h10a2 2 0 0 0 2-2V8.5a2 2 0 0 0-.59-1.41l-2.5-2.5A2 2 0 0 0 14.5 4H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 11v6m-3-3h6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconBriefcase({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M9 7V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4 8h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 12h16"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconManage({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M9 21h6m-8-3h10a2 2 0 0 0 2-2V8.5a2 2 0 0 0-.59-1.41l-2.5-2.5A2 2 0 0 0 14.5 4H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path d="M8 11h8M8 14h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconContacts({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M16 3H8a2 2 0 0 0-2 2v16l2.5-1.6c.32-.2.72-.2 1.04 0L12 21l2.46-1.6c.32-.2.72-.2 1.04 0L18 21V5a2 2 0 0 0-2-2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M12 8a2 2 0 1 0 0 4a2 2 0 0 0 0-4Z" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M8.8 16c.7-1.3 1.9-2 3.2-2s2.5.7 3.2 2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconInvites({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="m5 8 7 5 7-5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconSpecialties({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6 4h12v16H6V4Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M9 8h6M9 12h6M9 16h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function TabLink({ t }: { t: Tab }) {
+  const common =
+    "shrink-0 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-gray-900 " +
+    "dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-800 dark:hover:text-white";
+
+  if (t.icon && t.iconOnly) {
+    return (
+      <Link
+        key={t.href}
+        href={t.href}
+        title={t.label}
+        aria-label={t.label}
+        className={`${common} px-3 py-2`}
+      >
+        <span className="inline-flex items-center gap-2">
+          {t.icon}
+          {t.badge ? t.badge : null}
+        </span>
+      </Link>
+    );
+  }
+
+  return (
+    <Link key={t.href} href={t.href} className={`${common} px-3 py-2 text-sm font-extrabold`}>
+      <span className="inline-flex items-center gap-2">
+        {t.label}
+        {t.badge ? t.badge : null}
+      </span>
+    </Link>
+  );
+}
 
 export default function AppShell({
   title,
@@ -53,18 +219,22 @@ export default function AppShell({
   const isAdmin = role === "admin";
   const invitesCount = pendingInvites ?? 0;
 
-  const tabs: Tab[] = [
-    { href: "/dashboard", label: "Inicio" },
-    
-    { href: "/cases/new", label: "Nueva causa" },
-    { href: "/cases/mine", label: "Mis causas" },
+  const iconTabs: Tab[] = [
+    { href: "/cases/new", label: "Nueva causa", icon: <IconPlusDoc />, iconOnly: true },
+    { href: "/cases/mine", label: "Mis causas", icon: <IconBriefcase />, iconOnly: true },
+    { href: "/cases/manage", label: "Gestión de causas", icon: <IconManage />, iconOnly: true },
+    { href: "/contacts", label: "Agenda de contactos", icon: <IconContacts />, iconOnly: true },
     {
       href: "/invites",
       label: "Invitaciones",
+      icon: <IconInvites />,
+      iconOnly: true,
       badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
     },
-    { href: "/specialties", label: "Especialidades" },
+    { href: "/specialties", label: "Especialidades", icon: <IconSpecialties />, iconOnly: true },
   ];
+
+  const textTabs: Tab[] = [{ href: "/dashboard", label: "Inicio", icon: <IconHome /> }];
 
   const adminTabs: Tab[] = isAdmin
     ? [
@@ -79,15 +249,9 @@ export default function AppShell({
 
       {/* Top bar */}
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
-        
-
-        
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
-          
           <div className="min-w-[180px]">
-            <div className="text-base font-black text-gray-900 dark:text-gray-100">
-              {title}
-            </div>
+            <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
 
             <div className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
               {subtitle ? (
@@ -107,17 +271,17 @@ export default function AppShell({
           </div>
 
           <div className="flex items-center gap-2">
-  <InstallButton />
+            <InstallButton />
 
-  {onLogout ? (
-    <button
-      onClick={onLogout}
-      className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
-    >
-      Cerrar sesión
-    </button>
-  ) : null}
-</div>
+            {onLogout ? (
+              <button
+                onClick={onLogout}
+                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+              >
+                Cerrar sesión
+              </button>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -125,19 +289,27 @@ export default function AppShell({
       <div className="mx-auto max-w-6xl px-4 py-6">
         {/* Tabs */}
         <nav className="mb-4 flex gap-2 overflow-x-auto rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-          {tabs.map((t) => (
-            <Link
+          {/* Texto (solo Inicio) */}
+          {textTabs.map((t) => (
+            <TabLink
               key={t.href}
-              href={t.href}
-              className="shrink-0 rounded-xl border border-gray-200 px-3 py-2 text-sm font-extrabold text-gray-700 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-800 dark:hover:text-white"
-            >
-              <span className="inline-flex items-center gap-2">
-                {t.label}
-                {t.badge ? t.badge : null}
-              </span>
-            </Link>
+              t={{
+                ...t,
+                // aquí forzamos texto
+                iconOnly: false,
+              }}
+            />
           ))}
 
+          {/* separador */}
+          <span className="mx-1 my-1 w-px shrink-0 bg-gray-200 dark:bg-gray-800" />
+
+          {/* Íconos */}
+          {iconTabs.map((t) => (
+            <TabLink key={t.href} t={t} />
+          ))}
+
+          {/* Admin texto */}
           {adminTabs.length > 0 ? (
             <>
               <span className="mx-1 my-1 w-px shrink-0 bg-gray-200 dark:bg-gray-800" />

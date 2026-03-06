@@ -41,8 +41,11 @@ type CaseRow = {
   broughtByUid?: string;
   archivedAt?: FirestoreDateLike;
 
-  // opcional (si ya lo agregaste en tu modelo nuevo)
+  // opcional si lo tenés
   participantsUids?: string[];
+
+  // nuevo: última entrada en bitácora
+  lastLogAt?: FirestoreDateLike;
 };
 
 type SpecialtyDoc = { name?: string };
@@ -105,7 +108,31 @@ async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
   return all;
 }
 
-export default function MyCasesPage() {
+async function getLastLogAt(caseId: string): Promise<FirestoreDateLike | undefined> {
+  try {
+    const qLastLog = query(
+      collection(db, "cases", caseId, "logs"),
+      orderBy("createdAt", "desc"),
+      limit(1)
+    );
+
+    const snap = await getDocs(qLastLog);
+    if (snap.empty) return undefined;
+
+    const data = snap.docs[0].data() as any;
+    const createdAt = data?.createdAt;
+
+    if (createdAt?.seconds) {
+      return { seconds: createdAt.seconds };
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export default function ManageCasesPage() {
   const router = useRouter();
 
   // auth/shell
@@ -142,7 +169,7 @@ export default function MyCasesPage() {
   const [searchCaratula, setSearchCaratula] = useState("");
 
   // orden
-  const [orderField, setOrderField] = useState<"createdAt" | "caratulaTentativa">("createdAt");
+  const [orderField, setOrderField] = useState<"lastLogAt" | "caratulaTentativa">("lastLogAt");
   const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
 
   // paginación
@@ -212,66 +239,43 @@ export default function MyCasesPage() {
       }
 
       try {
-        // 1) Causas creadas por mí
-        const qCreatedBase = query(
-          collection(db, "cases"),
-          where("broughtByUid", "==", u.uid),
-          orderBy("createdAt", "desc")
-        );
-
-        // 2) Causas donde estoy confirmado
+        // Gestión: causas donde PARTICIPO (confirmado)
         const qConfirmedBase = query(
           collection(db, "cases"),
           where("confirmedAssigneesUids", "array-contains", u.uid),
           orderBy("__name__")
         );
 
-        // 3) Invitaciones donde fui invitado
-        const qInvitesBase = query(
-          collectionGroup(db, "invites"),
-          where("invitedUid", "==", u.uid),
-          orderBy("__name__")
-        );
+        const confirmedDocs = await getAllDocs(qConfirmedBase);
 
-        const [createdDocs, confirmedDocs, invitesDocs] = await Promise.all([
-          getAllDocs(qCreatedBase),
-          getAllDocs(qConfirmedBase),
-          getAllDocs(qInvitesBase),
-        ]);
+        const rawList = confirmedDocs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        })) as CaseRow[];
 
-        const byId = new Map<string, CaseRow>();
-
-        const addCaseDoc = (id: string, data: any) => {
-          byId.set(id, { id, ...(data as any) });
-        };
-
-        createdDocs.forEach((d) => addCaseDoc(d.id, d.data()));
-        confirmedDocs.forEach((d) => addCaseDoc(d.id, d.data()));
-
-        const invitedCaseIds = Array.from(
-          new Set(invitesDocs.map((d) => d.ref.parent.parent?.id ?? "").filter(Boolean))
-        );
-
-        await Promise.all(
-          invitedCaseIds.map(async (caseId) => {
-            if (byId.has(caseId)) return;
-            try {
-              const caseSnap = await getDoc(doc(db, "cases", caseId));
-              if (caseSnap.exists()) addCaseDoc(caseId, caseSnap.data());
-            } catch {}
+        // cargar última entrada de bitácora por cada causa
+        const listWithLastLog = await Promise.all(
+          rawList.map(async (item) => {
+            const lastLogAt = await getLastLogAt(item.id);
+            return {
+              ...item,
+              lastLogAt,
+            };
           })
         );
 
-        const list = Array.from(byId.values()).sort((a, b) => {
-          const as = a.createdAt?.seconds ?? 0;
-          const bs = b.createdAt?.seconds ?? 0;
+        // orden inicial: última entrada de bitácora desc
+        listWithLastLog.sort((a, b) => {
+          const as = Number(a.lastLogAt?.seconds ?? 0);
+          const bs = Number(b.lastLogAt?.seconds ?? 0);
           return bs - as;
         });
 
-        setRows(list);
+        setRows(listWithLastLog);
         setPage(1);
       } catch (e: any) {
-        setMsg(e?.message ?? "Error cargando mis causas");
+        console.error("ERROR cargando causas para gestionar:", e);
+        setMsg(e?.message ?? "Error cargando causas para gestionar");
       } finally {
         setLoading(false);
       }
@@ -356,6 +360,7 @@ export default function MyCasesPage() {
       if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId)
         return false;
 
+      // compartido con
       if (sharedWithUidFilter) {
         if (sharedWithUidFilter === "__none__") return false;
         const parts = caseParticipants(r);
@@ -371,9 +376,9 @@ export default function MyCasesPage() {
     });
 
     const sorted = [...base].sort((a, b) => {
-      if (orderField === "createdAt") {
-        const as = Number(a.createdAt?.seconds ?? 0);
-        const bs = Number(b.createdAt?.seconds ?? 0);
+      if (orderField === "lastLogAt") {
+        const as = Number(a.lastLogAt?.seconds ?? 0);
+        const bs = Number(b.lastLogAt?.seconds ?? 0);
         return orderDir === "asc" ? as - bs : bs - as;
       } else {
         const ac = safeLower(a.caratulaTentativa);
@@ -420,7 +425,7 @@ export default function MyCasesPage() {
     setFilterSpecialtyId("all");
     setFilterSharedWithEmail("all");
     setSearchCaratula("");
-    setOrderField("createdAt");
+    setOrderField("lastLogAt");
     setOrderDir("desc");
     setShowArchived(false);
   }
@@ -432,7 +437,7 @@ export default function MyCasesPage() {
 
   return (
     <AppShell
-      title="Mis causas"
+      title="Gestión de causas"
       userEmail={user?.email ?? null}
       role={role}
       pendingInvites={pendingInvites}
@@ -451,15 +456,6 @@ export default function MyCasesPage() {
           ) : null}{" "}
           · Total (con filtros) <span className="font-bold">{totalFiltered}</span> · Total sin filtros{" "}
           <span className="font-bold">{rows.length}</span>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/cases"
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-          >
-            Ver todas →
-          </Link>
         </div>
       </div>
 
@@ -512,6 +508,7 @@ export default function MyCasesPage() {
               </select>
             </label>
 
+            {/* Compartido con */}
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Compartido con{" "}
               <select
@@ -557,7 +554,7 @@ export default function MyCasesPage() {
                 onChange={(e) => setOrderField(e.target.value as any)}
                 className="ml-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
               >
-                <option value="createdAt">Fecha de creación</option>
+                <option value="lastLogAt">Última entrada en bitácora</option>
                 <option value="caratulaTentativa">Carátula</option>
               </select>
             </label>
@@ -605,67 +602,46 @@ export default function MyCasesPage() {
             </div>
           ) : (
             pageRows.map((r) => {
-              const required = Number(r.requiredAssigneesCount ?? 2);
-              const confirmed = (r.confirmedAssigneesUids ?? []).length;
-              const missing = Math.max(0, required - confirmed);
-
               return (
                 <div
                   key={r.id}
                   className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-[240px]">
+                    <div className="min-w-[240px] flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Link
-                          href={`/cases/${r.id}`}
-                          className="font-black text-gray-900 hover:underline dark:text-gray-100"
-                        >
+                        <div className="font-black text-gray-900 dark:text-gray-100">
                           {r.caratulaTentativa || "(sin carátula)"}
-                        </Link>
+                        </div>
 
                         {r.status === "archived" ? (
                           <Badge tone="archived">
-                            ARCHIVADA · {formatDateFromSeconds(r.archivedAt?.seconds)}
+                            Archivada · {formatDateFromSeconds(r.archivedAt?.seconds)}
                           </Badge>
                         ) : null}
                       </div>
 
-                      <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
-                        Materia:{" "}
-                        <span className="font-bold">
-                          {specialtyNameById[r.specialtyId] ?? r.specialtyId}
-                        </span>{" "}
-                        · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
-                        <span className="font-bold">
-                          {formatDateFromSeconds(r.createdAt?.seconds)}
-                        </span>
+                      <div className="mt-1 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-700 dark:text-gray-200">
+                        <div>
+                          Materia:{" "}
+                          <span className="font-bold">
+                            {specialtyNameById[r.specialtyId] ?? r.specialtyId}
+                          </span>{" "}
+                          · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> ·
+                          Última bitácora:{" "}
+                          <span className="font-bold">
+                            {formatDateFromSeconds(r.lastLogAt?.seconds)}
+                          </span>
+                        </div>
+
+                        <Link
+                          href={`/cases/manage/${r.id}`}
+                          className="shrink-0 rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+                        >
+                          Gestionar
+                        </Link>
                       </div>
                     </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      {r.status === "archived" ? (
-                        <Badge tone="archived">ARCHIVADA</Badge>
-                      ) : r.status === "assigned" ? (
-                        <Badge tone="ok">ASIGNADA</Badge>
-                      ) : (
-                        <Badge>PENDIENTE</Badge>
-                      )}
-                      <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
-                        {missing > 0
-                          ? `faltan ${missing} (${confirmed}/${required})`
-                          : `completo (${confirmed}/${required})`}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <Link
-                      href={`/cases/${r.id}`}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Ver detalle →
-                    </Link>
                   </div>
                 </div>
               );

@@ -26,7 +26,11 @@ import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 
-type CaseStatus = "draft" | "assigned";
+type CaseStatus = "draft" | "assigned" | "archived";
+
+type FirestoreDateLike = {
+  seconds?: number;
+};
 
 type CaseRow = {
   id: string;
@@ -36,6 +40,7 @@ type CaseRow = {
   status: CaseStatus;
   createdAtSec: number;
   broughtByUid: string;
+  archivedAt?: FirestoreDateLike;
 };
 
 const PAGE_SIZE = 25;
@@ -50,11 +55,13 @@ function Badge({
   tone = "neutral",
 }: {
   children: React.ReactNode;
-  tone?: "neutral" | "ok";
+  tone?: "neutral" | "ok" | "archived";
 }) {
   const cls =
     tone === "ok"
       ? "bg-green-100 border-green-300 text-green-900 dark:bg-green-900/30 dark:border-green-700 dark:text-green-100"
+      : tone === "archived"
+      ? "bg-amber-100 border-amber-300 text-amber-900 dark:bg-amber-900/30 dark:border-amber-700 dark:text-amber-100"
       : "bg-gray-100 border-gray-300 text-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100";
 
   return (
@@ -87,6 +94,7 @@ export default function CasesAllPage() {
   const [filterJur, setFilterJur] = useState<string>("all");
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
   const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>("");
+  const [showArchived, setShowArchived] = useState(false);
 
   // búsqueda por carátula (página actual)
   const [searchCaratula, setSearchCaratula] = useState<string>("");
@@ -119,7 +127,7 @@ export default function CasesAllPage() {
   // uid del creador filtrado (resuelto por email exacto)
   const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
 
-  // ✅ modal eliminar
+  // modal eliminar
   const [deleteCaseId, setDeleteCaseId] = useState<string | null>(null);
   const [deleteCaseTitle, setDeleteCaseTitle] = useState<string>("");
   const [deleting, setDeleting] = useState(false);
@@ -127,17 +135,18 @@ export default function CasesAllPage() {
   function buildCasesQuery(base?: Query, cursor?: DocumentSnapshot | null) {
     let qAny: any = base ?? collection(db, "cases");
 
-    // filtros server-side (equality)
+    if (!showArchived) {
+      qAny = query(qAny, where("status", "!=", "archived"));
+    }
+
     if (filterStatus !== "all") qAny = query(qAny, where("status", "==", filterStatus));
     if (filterJur !== "all") qAny = query(qAny, where("jurisdiccion", "==", filterJur));
     if (filterSpecialtyId !== "all")
       qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
     if (creatorUidFilter) qAny = query(qAny, where("broughtByUid", "==", creatorUidFilter));
 
-    // orden
     qAny = query(qAny, orderBy(orderField, orderDir));
 
-    // paginación
     if (cursor) qAny = query(qAny, startAfter(cursor));
     qAny = query(qAny, limit(PAGE_SIZE));
 
@@ -149,13 +158,16 @@ export default function CasesAllPage() {
     if (!e) return null;
     const qUsers = query(collection(db, "users"), where("email", "==", e), limit(1));
     const snap = await getDocs(qUsers);
-    if (snap.empty) return "__none__"; // forzamos 0 resultados
+    if (snap.empty) return "__none__";
     return snap.docs[0].id;
   }
 
   async function refreshTotalCount() {
-    // Sin aggregation count() por compatibilidad; scan por páginas.
     let qAny: any = collection(db, "cases");
+
+    if (!showArchived) {
+      qAny = query(qAny, where("status", "!=", "archived"));
+    }
 
     if (filterStatus !== "all") qAny = query(qAny, where("status", "==", filterStatus));
     if (filterJur !== "all") qAny = query(qAny, where("jurisdiccion", "==", filterJur));
@@ -257,6 +269,7 @@ export default function CasesAllPage() {
           status: (data?.status ?? "draft") as CaseStatus,
           createdAtSec: Number(data?.createdAt?.seconds ?? 0),
           broughtByUid: String(data?.broughtByUid ?? ""),
+          archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
         };
       });
 
@@ -265,7 +278,6 @@ export default function CasesAllPage() {
 
       await loadAcceptedForCases(rows.map((r) => r.id));
 
-      // precargar emails
       const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
       const missingUids = uids.filter((u) => !emailByUid[u]);
       if (missingUids.length) {
@@ -284,7 +296,6 @@ export default function CasesAllPage() {
         setEmailByUid(newMap);
       }
 
-      // precargar especialidades
       const spIds = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
       const missingSp = spIds.filter((id) => !specialtyNameById[id]);
       if (missingSp.length) {
@@ -310,12 +321,9 @@ export default function CasesAllPage() {
     }
   }
 
-  // ✅ borrar subcolección invites en tandas, y luego borrar doc de la causa
   async function deleteCaseFully(caseId: string) {
-    // Seguridad extra en UI
     if (role !== "admin") throw new Error("No autorizado");
 
-    // 1) borrar invites (si existe)
     for (let i = 0; i < 50; i++) {
       const snap = await getDocs(query(collection(db, "cases", caseId, "invites"), limit(450)));
       if (snap.empty) break;
@@ -325,11 +333,9 @@ export default function CasesAllPage() {
       await batch.commit();
     }
 
-    // 2) borrar doc principal
     await deleteDoc(doc(db, "cases", caseId));
   }
 
-  // init auth + options + first load
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -339,7 +345,6 @@ export default function CasesAllPage() {
 
       setUser(u);
 
-      // rol
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -348,7 +353,6 @@ export default function CasesAllPage() {
         setRole("lawyer");
       }
 
-      // pending invites
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -361,7 +365,6 @@ export default function CasesAllPage() {
         setPendingInvites(0);
       }
 
-      // opciones especialidades
       try {
         const spSnap = await getDocs(query(collection(db, "specialties"), orderBy("name", "asc")));
         setSpecialtiesOptions(
@@ -374,7 +377,6 @@ export default function CasesAllPage() {
         // ok
       }
 
-      // primera carga
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
@@ -387,7 +389,6 @@ export default function CasesAllPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  // when creator email changes: resolve uid
   useEffect(() => {
     (async () => {
       const email = safeLower(filterCreatorEmail);
@@ -405,7 +406,12 @@ export default function CasesAllPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCreatorEmail]);
 
-  // when filters/order change: reset pagination & reload
+  useEffect(() => {
+    if (!showArchived && filterStatus === "archived") {
+      setFilterStatus("all");
+    }
+  }, [showArchived, filterStatus]);
+
   useEffect(() => {
     (async () => {
       setPage(1);
@@ -416,9 +422,8 @@ export default function CasesAllPage() {
       await refreshTotalCount();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir]);
+  }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir, showArchived]);
 
-  // filtro por carátula sobre pageRows
   const pageRowsFilteredByCaratula = useMemo(() => {
     const s = safeLower(searchCaratula);
     if (!s) return pageRows;
@@ -477,6 +482,7 @@ export default function CasesAllPage() {
           status: (data?.status ?? "draft") as CaseStatus,
           createdAtSec: Number(data?.createdAt?.seconds ?? 0),
           broughtByUid: String(data?.broughtByUid ?? ""),
+          archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
         };
       });
 
@@ -499,6 +505,7 @@ export default function CasesAllPage() {
     setSearchCaratula("");
     setOrderField("createdAt");
     setOrderDir("desc");
+    setShowArchived(false);
   }
 
   return (
@@ -512,7 +519,6 @@ export default function CasesAllPage() {
         router.replace("/login");
       }}
     >
-      {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{showingText.shown}</span>{" "}
@@ -530,7 +536,6 @@ export default function CasesAllPage() {
         </div>
       </div>
 
-      {/* Filtros / orden */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -544,6 +549,7 @@ export default function CasesAllPage() {
                 <option value="all">Todos</option>
                 <option value="draft">Pendiente</option>
                 <option value="assigned">Asignada</option>
+                {showArchived ? <option value="archived">Archivada</option> : null}
               </select>
             </label>
 
@@ -599,7 +605,17 @@ export default function CasesAllPage() {
             </label>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="inline-flex items-center gap-2 text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Mostrar archivadas
+            </label>
+
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Ordenar por{" "}
               <select
@@ -646,7 +662,6 @@ export default function CasesAllPage() {
         </div>
       ) : null}
 
-      {/* Listado */}
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
           {pageRowsFilteredByCaratula.length === 0 ? (
@@ -661,11 +676,19 @@ export default function CasesAllPage() {
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-[240px]">
-                    <div className="font-black text-gray-900 dark:text-gray-100">
-                      {r.caratulaTentativa || "(sin carátula)"}{" "}
-                      <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
-                        (#{r.id})
-                      </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-black text-gray-900 dark:text-gray-100">
+                        {r.caratulaTentativa || "(sin carátula)"}{" "}
+                        <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+                          (#{r.id})
+                        </span>
+                      </div>
+
+                      {r.status === "archived" ? (
+                        <Badge tone="archived">
+                          ARCHIVADA · {formatDateFromSeconds(r.archivedAt?.seconds)}
+                        </Badge>
+                      ) : null}
                     </div>
 
                     <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
@@ -706,7 +729,13 @@ export default function CasesAllPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {r.status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>PENDIENTE</Badge>}
+                    {r.status === "archived" ? (
+                      <Badge tone="archived">ARCHIVADA</Badge>
+                    ) : r.status === "assigned" ? (
+                      <Badge tone="ok">ASIGNADA</Badge>
+                    ) : (
+                      <Badge>PENDIENTE</Badge>
+                    )}
                   </div>
                 </div>
 
@@ -718,7 +747,6 @@ export default function CasesAllPage() {
                     Ver detalle →
                   </Link>
 
-                  {/* ✅ SOLO ADMIN */}
                   {role === "admin" ? (
                     <button
                       onClick={() => {
@@ -737,7 +765,6 @@ export default function CasesAllPage() {
         </div>
       ) : null}
 
-      {/* Paginación */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           disabled={page <= 1}
@@ -765,7 +792,6 @@ export default function CasesAllPage() {
         ahora). · La búsqueda por carátula filtra <span className="font-bold">solo la página actual</span>.
       </div>
 
-      {/* ✅ MODAL CONFIRMAR ELIMINACIÓN */}
       {deleteCaseId ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-5 shadow-xl dark:border-gray-800 dark:bg-gray-900">
@@ -807,12 +833,10 @@ export default function CasesAllPage() {
                   try {
                     await deleteCaseFully(deleteCaseId);
 
-                    // cerrar modal
                     const removedId = deleteCaseId;
                     setDeleteCaseId(null);
                     setDeleteCaseTitle("");
 
-                    // refrescar UI sin recargar todo si se puede
                     setPageRows((prev) => prev.filter((r) => r.id !== removedId));
                     setAcceptedByCaseId((prev) => {
                       const next = { ...prev };
@@ -820,7 +844,6 @@ export default function CasesAllPage() {
                       return next;
                     });
 
-                    // refrescar total y, si querés, traer de nuevo página actual
                     await refreshTotalCount();
                   } catch (e: any) {
                     setMsg(e?.message ?? "Error eliminando causa");
