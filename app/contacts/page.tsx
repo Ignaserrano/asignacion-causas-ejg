@@ -23,6 +23,7 @@ import { PartyRole } from "@/lib/caseManagement";
 type ContactRow = {
   id: string;
   type?: string;
+  personType?: string;
   name?: string;
   lastName?: string;
   fullName?: string;
@@ -31,16 +32,18 @@ type ContactRow = {
   cuit?: string;
   email?: string;
   phone?: string;
+  address?: string;
+  nationality?: string;
+  birthDate?: string;
+  civilStatus?: string;
+  marriageCount?: string;
+  spouseName?: string;
+  referredBy?: string;
+  notes?: string;
   tuition?: string;
   conciliationArea?: string;
   specialtyArea?: string;
 };
-
-type SortOption =
-  | "lastNameAsc"
-  | "lastNameDesc"
-  | "nameAsc"
-  | "nameDesc";
 
 type ContactCaseRow = {
   caseId: string;
@@ -55,7 +58,26 @@ function safeText(value: any) {
 }
 
 function safeLower(value: any) {
-  return safeText(value).toLowerCase();
+  return safeText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizePersonType(value: any): "fisica" | "juridica" {
+  const v = safeLower(value);
+
+  if (
+    v === "juridica" ||
+    v === "persona juridica" ||
+    v === "persona_juridica" ||
+    v === "empresa" ||
+    v === "sociedad"
+  ) {
+    return "juridica";
+  }
+
+  return "fisica";
 }
 
 function labelType(type?: string) {
@@ -73,6 +95,12 @@ function labelType(type?: string) {
     default:
       return "Otro";
   }
+}
+
+function labelPersonType(personType?: string) {
+  return normalizePersonType(personType) === "juridica"
+    ? "Persona jurídica"
+    : "Persona física";
 }
 
 function roleLabel(role?: PartyRole) {
@@ -97,87 +125,88 @@ function roleLabel(role?: PartyRole) {
 }
 
 function getDisplayName(c: ContactRow) {
+  const personType = normalizePersonType(c.personType);
   const name = safeText(c.name);
   const lastName = safeText(c.lastName);
   const fullName = safeText(c.fullName);
 
-  if (name || lastName) return `${name} ${lastName}`.trim();
+  if (personType === "juridica") {
+    if (name) return name;
+    if (fullName) return fullName;
+    return "(sin nombre)";
+  }
+
+  if (lastName || name) {
+    return `${lastName}${lastName && name ? ", " : ""}${name}`.trim();
+  }
+
   if (fullName) return fullName;
   return "(sin nombre)";
 }
 
-function getDisplayFirstName(c: ContactRow) {
+function getSearchableText(c: ContactRow) {
+  const personType = normalizePersonType(c.personType);
   const name = safeText(c.name);
-  if (name) return name;
-
-  const fullName = safeText(c.fullName);
-  if (!fullName) return "";
-  const parts = fullName.split(/\s+/).filter(Boolean);
-  if (parts.length <= 1) return fullName;
-  return parts.slice(0, -1).join(" ");
-}
-
-function getDisplayLastName(c: ContactRow) {
   const lastName = safeText(c.lastName);
-  if (lastName) return lastName;
-
   const fullName = safeText(c.fullName);
-  if (!fullName) return "";
-  const parts = fullName.split(/\s+/).filter(Boolean);
-  if (parts.length <= 1) return "";
-  return parts[parts.length - 1];
+  const dni = safeText(c.dni);
+  const cuit = safeText(c.cuit);
+  const email = safeText(c.email);
+
+  if (personType === "juridica") {
+    return safeLower([name, fullName, cuit, email].join(" "));
+  }
+
+  return safeLower(
+    [name, lastName, fullName, `${lastName} ${name}`, `${name} ${lastName}`, dni, cuit, email].join(
+      " "
+    )
+  );
 }
 
-function compareContacts(a: ContactRow, b: ContactRow, sort: SortOption) {
-  const aName = safeLower(getDisplayFirstName(a));
-  const bName = safeLower(getDisplayFirstName(b));
-  const aLastName = safeLower(getDisplayLastName(a));
-  const bLastName = safeLower(getDisplayLastName(b));
-  const aFull = safeLower(getDisplayName(a));
-  const bFull = safeLower(getDisplayName(b));
+function getSortKey(c: ContactRow) {
+  const personType = normalizePersonType(c.personType);
+  const name = safeText(c.name);
+  const lastName = safeText(c.lastName);
+  const fullName = safeText(c.fullName);
 
-  switch (sort) {
-    case "lastNameDesc": {
-      const byLastName = bLastName.localeCompare(aLastName, "es");
-      if (byLastName !== 0) return byLastName;
-
-      const byName = bName.localeCompare(aName, "es");
-      if (byName !== 0) return byName;
-
-      return bFull.localeCompare(aFull, "es");
-    }
-
-    case "nameAsc": {
-      const byName = aName.localeCompare(bName, "es");
-      if (byName !== 0) return byName;
-
-      const byLastName = aLastName.localeCompare(bLastName, "es");
-      if (byLastName !== 0) return byLastName;
-
-      return aFull.localeCompare(bFull, "es");
-    }
-
-    case "nameDesc": {
-      const byName = bName.localeCompare(aName, "es");
-      if (byName !== 0) return byName;
-
-      const byLastName = bLastName.localeCompare(aLastName, "es");
-      if (byLastName !== 0) return byLastName;
-
-      return bFull.localeCompare(aFull, "es");
-    }
-
-    case "lastNameAsc":
-    default: {
-      const byLastName = aLastName.localeCompare(bLastName, "es");
-      if (byLastName !== 0) return byLastName;
-
-      const byName = aName.localeCompare(bName, "es");
-      if (byName !== 0) return byName;
-
-      return aFull.localeCompare(bFull, "es");
-    }
+  if (personType === "juridica") {
+    return safeLower(name || fullName);
   }
+
+  const ln = safeLower(lastName);
+  const nm = safeLower(name);
+  const fn = safeLower(fullName);
+
+  if (ln || nm) return `${ln} ${nm}`.trim();
+  return fn;
+}
+
+function compareContactsAsc(a: ContactRow, b: ContactRow) {
+  const aKey = getSortKey(a);
+  const bKey = getSortKey(b);
+
+  const byKey = aKey.localeCompare(bKey, "es");
+  if (byKey !== 0) return byKey;
+
+  return safeLower(getDisplayName(a)).localeCompare(safeLower(getDisplayName(b)), "es");
+}
+
+function Field({
+  label,
+  value,
+}: {
+  label: string;
+  value?: string;
+}) {
+  return (
+    <div className="grid gap-1 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800/60">
+      <div className="text-xs font-extrabold text-gray-600 dark:text-gray-300">{label}</div>
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+        {safeText(value) || "-"}
+      </div>
+    </div>
+  );
 }
 
 function Modal({
@@ -195,7 +224,7 @@ function Modal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
           <button
@@ -212,6 +241,127 @@ function Modal({
   );
 }
 
+function ContactDetailsContent({ contact }: { contact: ContactRow }) {
+  const personType = normalizePersonType(contact.personType);
+  const type = safeText(contact.type);
+
+  return (
+    <div className="grid gap-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Tipo de contacto" value={labelType(contact.type)} />
+        <Field label="Tipo de persona" value={labelPersonType(contact.personType)} />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field
+          label={personType === "juridica" ? "Razón social" : "Nombre"}
+          value={contact.name}
+        />
+        {personType === "fisica" ? (
+          <Field label="Apellido" value={contact.lastName} />
+        ) : (
+          <Field label="Apellido" value="-" />
+        )}
+      </div>
+
+      {type === "cliente" && (
+        <>
+          {personType === "fisica" ? (
+            <>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Nacionalidad" value={contact.nationality} />
+                <Field label="Fecha de nacimiento" value={contact.birthDate} />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="DNI" value={contact.dni} />
+                <Field label="CUIT/CUIL" value={contact.cuit} />
+              </div>
+
+              <Field label="Estado civil" value={contact.civilStatus} />
+
+              {safeText(contact.civilStatus) === "casado" ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="En ... nupcias" value={contact.marriageCount} />
+                  <Field label="Nombre cónyuge" value={contact.spouseName} />
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <Field label="CUIT" value={contact.cuit} />
+          )}
+
+          <Field label="Referido por" value={contact.referredBy} />
+        </>
+      )}
+
+      {type === "abogado_contraria" && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="CUIT" value={contact.cuit} />
+          <Field
+            label={personType === "fisica" ? "Matrícula" : "Matrícula / dato identificatorio"}
+            value={contact.tuition}
+          />
+        </div>
+      )}
+
+      {type === "demandado" && (
+        <>
+          {personType === "fisica" ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              <Field label="Nacionalidad" value={contact.nationality} />
+              <Field label="DNI" value={contact.dni} />
+              <Field label="CUIT/CUIL" value={contact.cuit} />
+            </div>
+          ) : (
+            <Field label="CUIT" value={contact.cuit} />
+          )}
+        </>
+      )}
+
+      {type === "conciliador" && (
+        <>
+          <div className="grid gap-3 md:grid-cols-2">
+            {personType === "fisica" ? (
+              <Field label="DNI" value={contact.dni} />
+            ) : (
+              <Field label="DNI" value="-" />
+            )}
+            <Field label={personType === "fisica" ? "CUIT/CUIL" : "CUIT"} value={contact.cuit} />
+          </div>
+          <Field label="Área de conciliación / mediación" value={contact.conciliationArea} />
+        </>
+      )}
+
+      {type === "perito" && (
+        <>
+          <div className="grid gap-3 md:grid-cols-2">
+            {personType === "fisica" ? (
+              <Field label="DNI" value={contact.dni} />
+            ) : (
+              <Field label="DNI" value="-" />
+            )}
+            <Field label={personType === "fisica" ? "CUIT/CUIL" : "CUIT"} value={contact.cuit} />
+          </div>
+          <Field label="Área de especialidad" value={contact.specialtyArea} />
+        </>
+      )}
+
+      <Field label="Domicilio" value={contact.address} />
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Teléfono" value={contact.phone} />
+        <Field label="Email" value={contact.email} />
+      </div>
+
+      <Field
+        label={type === "cliente" || type === "demandado" ? "Otros datos" : "Otros"}
+        value={contact.notes}
+      />
+    </div>
+  );
+}
+
 export default function ContactsListPage() {
   const router = useRouter();
 
@@ -221,7 +371,6 @@ export default function ContactsListPage() {
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
-  const [sortBy, setSortBy] = useState<SortOption>("lastNameAsc");
 
   const [allRows, setAllRows] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -234,6 +383,9 @@ export default function ContactsListPage() {
   const [casesLoading, setCasesLoading] = useState(false);
   const [casesError, setCasesError] = useState<string | null>(null);
   const [contactCases, setContactCases] = useState<ContactCaseRow[]>([]);
+
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [detailsContact, setDetailsContact] = useState<ContactRow | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -316,46 +468,37 @@ export default function ContactsListPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, typeFilter, sortBy]);
+  }, [search, typeFilter]);
 
   const filteredRows = useMemo(() => {
     const s = safeLower(search);
 
     const list = allRows.filter((c) => {
       const matchesType = typeFilter === "all" ? true : safeText(c.type) === typeFilter;
-
       if (!matchesType) return false;
 
       if (!s) return true;
-
-      const name = safeLower(c.name);
-      const lastName = safeLower(c.lastName);
-      const fullName = safeLower(c.fullName);
-      const combined1 = safeLower(`${c.name ?? ""} ${c.lastName ?? ""}`);
-      const combined2 = safeLower(`${c.lastName ?? ""} ${c.name ?? ""}`);
-
-      return (
-        name.includes(s) ||
-        lastName.includes(s) ||
-        fullName.includes(s) ||
-        combined1.includes(s) ||
-        combined2.includes(s)
-      );
+      return getSearchableText(c).includes(s);
     });
 
-    return [...list].sort((a, b) => compareContacts(a, b, sortBy));
-  }, [allRows, search, typeFilter, sortBy]);
+    return [...list].sort(compareContactsAsc);
+  }, [allRows, search, typeFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
 
   const paginatedRows = useMemo(() => {
-    const currentPage = Math.min(page, totalPages);
     const start = (currentPage - 1) * PAGE_SIZE;
     return filteredRows.slice(start, start + PAGE_SIZE);
-  }, [filteredRows, page, totalPages]);
+  }, [filteredRows, currentPage]);
 
-  const fromRow = filteredRows.length === 0 ? 0 : (Math.min(page, totalPages) - 1) * PAGE_SIZE + 1;
-  const toRow = Math.min(Math.min(page, totalPages) * PAGE_SIZE, filteredRows.length);
+  const fromRow = filteredRows.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const toRow = Math.min(currentPage * PAGE_SIZE, filteredRows.length);
+
+  function openDetailsModal(contact: ContactRow) {
+    setDetailsContact(contact);
+    setDetailsModalOpen(true);
+  }
 
   async function openCasesModal(contact: ContactRow) {
     const contactName = getDisplayName(contact);
@@ -413,14 +556,14 @@ export default function ContactsListPage() {
       ) : null}
 
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div className="grid flex-1 gap-3 md:grid-cols-3">
+        <div className="grid flex-1 gap-3 md:grid-cols-2">
           <div className="min-w-[220px]">
             <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-              Buscar por apellido y nombre
+              Buscar contacto
             </label>
             <input
               className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              placeholder="Apellido, nombre..."
+              placeholder="Apellido, nombre o razón social..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -442,22 +585,6 @@ export default function ContactsListPage() {
               <option value="conciliador">Conciliador</option>
               <option value="perito">Perito</option>
               <option value="otro">Otro</option>
-            </select>
-          </div>
-
-          <div className="min-w-[180px]">
-            <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-              Ordenar
-            </label>
-            <select
-              className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortOption)}
-            >
-              <option value="lastNameAsc">Apellido A → Z</option>
-              <option value="lastNameDesc">Apellido Z → A</option>
-              <option value="nameAsc">Nombre A → Z</option>
-              <option value="nameDesc">Nombre Z → A</option>
             </select>
           </div>
         </div>
@@ -489,19 +616,18 @@ export default function ContactsListPage() {
       ) : (
         <>
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <div className="hidden grid-cols-[2.2fr_1.1fr_1.6fr_auto_auto] gap-3 border-b border-gray-200 px-4 py-3 text-xs font-black uppercase tracking-wide text-gray-600 dark:border-gray-800 dark:text-gray-300 md:grid">
-              <div>Nombre y apellido</div>
+            <div className="hidden grid-cols-[2.2fr_1fr_1.4fr_auto] gap-3 border-b border-gray-200 px-4 py-3 text-xs font-black uppercase tracking-wide text-gray-600 dark:border-gray-800 dark:text-gray-300 md:grid">
+              <div>Contacto</div>
               <div>Teléfono</div>
               <div>Email</div>
-              <div>Causas</div>
-              <div>Ver</div>
+              <div>Acciones</div>
             </div>
 
             <div className="divide-y divide-gray-200 dark:divide-gray-800">
               {paginatedRows.map((c) => (
                 <div
                   key={c.id}
-                  className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1.1fr_1.6fr_auto_auto] md:items-center"
+                  className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1fr_1.4fr_auto] md:items-center"
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -520,14 +646,29 @@ export default function ContactsListPage() {
                       {c.email ? c.email : "Email: -"}
                     </div>
 
-                    <div className="mt-2 md:hidden">
+                    <div className="mt-2 flex flex-wrap gap-2 md:hidden">
+                      <button
+                        type="button"
+                        onClick={() => openDetailsModal(c)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                      >
+                        Ver completo
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => openCasesModal(c)}
                         className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                       >
-                        Ver causas de este contacto
+                        Ver causas
                       </button>
+
+                      <Link
+                        href={`/contacts/${c.id}/edit`}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                      >
+                        Editar
+                      </Link>
                     </div>
                   </div>
 
@@ -539,7 +680,15 @@ export default function ContactsListPage() {
                     {c.email || "-"}
                   </div>
 
-                  <div className="hidden md:flex md:justify-end">
+                  <div className="hidden md:flex md:flex-wrap md:justify-end md:gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openDetailsModal(c)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                    >
+                      Ver completo
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => openCasesModal(c)}
@@ -547,16 +696,12 @@ export default function ContactsListPage() {
                     >
                       Ver causas
                     </button>
-                  </div>
 
-                  <div className="flex md:justify-end">
                     <Link
-                      href={`/contacts/${c.id}`}
-                      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-300 bg-white text-lg font-black text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                      title="Ver contacto"
-                      aria-label={`Ver contacto ${getDisplayName(c)}`}
+                      href={`/contacts/${c.id}/edit`}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                     >
-                      +
+                      Editar
                     </Link>
                   </div>
                 </div>
@@ -566,14 +711,14 @@ export default function ContactsListPage() {
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
-              Página {Math.min(page, totalPages)} de {totalPages}
+              Página {currentPage} de {totalPages}
             </div>
 
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
+                disabled={currentPage <= 1}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100"
               >
                 Anterior
@@ -582,7 +727,7 @@ export default function ContactsListPage() {
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
+                disabled={currentPage >= totalPages}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100"
               >
                 Siguiente
@@ -591,6 +736,17 @@ export default function ContactsListPage() {
           </div>
         </>
       )}
+
+      <Modal
+        open={detailsModalOpen}
+        title={detailsContact ? `Ficha de ${getDisplayName(detailsContact)}` : "Ficha del contacto"}
+        onClose={() => {
+          setDetailsModalOpen(false);
+          setDetailsContact(null);
+        }}
+      >
+        {detailsContact ? <ContactDetailsContent contact={detailsContact} /> : null}
+      </Modal>
 
       <Modal
         open={casesModalOpen}

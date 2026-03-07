@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  doc,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
 export type ContactType =
@@ -47,8 +53,82 @@ export type CreatedContact = {
   specialtyArea?: string;
 };
 
+export type ContactFormInitialValues = {
+  type?: ContactType;
+  personType?: PersonType;
+  name?: string;
+  lastName?: string;
+  nationality?: string;
+  address?: string;
+  dni?: string;
+  cuit?: string;
+  birthDate?: string;
+  civilStatus?: CivilStatus;
+  marriageCount?: string;
+  spouseName?: string;
+  phone?: string;
+  email?: string;
+  referredBy?: string;
+  notes?: string;
+  tuition?: string;
+  conciliationArea?: string;
+  specialtyArea?: string;
+};
+
 function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
+}
+
+function normalizeText(value: any) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeContactType(value: any): ContactType {
+  const v = normalizeText(value);
+  if (
+    v === "cliente" ||
+    v === "abogado_contraria" ||
+    v === "demandado" ||
+    v === "conciliador" ||
+    v === "perito" ||
+    v === "otro"
+  ) {
+    return v;
+  }
+  return "cliente";
+}
+
+function normalizePersonType(value: any): PersonType {
+  const v = normalizeText(value);
+  if (
+    v === "juridica" ||
+    v === "persona juridica" ||
+    v === "persona_juridica" ||
+    v === "empresa" ||
+    v === "sociedad"
+  ) {
+    return "juridica";
+  }
+  return "fisica";
+}
+
+function normalizeCivilStatus(value: any): CivilStatus {
+  const v = normalizeText(value);
+  if (
+    v === "soltero" ||
+    v === "casado" ||
+    v === "divorciado" ||
+    v === "viudo" ||
+    v === "separado_hecho" ||
+    v === "concubinato"
+  ) {
+    return v;
+  }
+  return "soltero";
 }
 
 function buildFullName(personType: PersonType, name: string, lastName: string) {
@@ -64,12 +144,18 @@ export default function ContactForm({
   onCancel,
   submitLabel = "Guardar contacto",
   cancelLabel = "Cancelar",
+  mode = "create",
+  contactId,
+  initialValues,
 }: {
   userUid: string;
   onSaved?: (contact: CreatedContact) => void;
   onCancel?: () => void;
   submitLabel?: string;
   cancelLabel?: string;
+  mode?: "create" | "edit";
+  contactId?: string;
+  initialValues?: ContactFormInitialValues;
 }) {
   const [type, setType] = useState<ContactType>("cliente");
   const [personType, setPersonType] = useState<PersonType>("fisica");
@@ -97,6 +183,44 @@ export default function ContactForm({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (mode !== "edit" || !initialValues) return;
+
+    const nextType = normalizeContactType(initialValues.type);
+    const nextPersonType = normalizePersonType(initialValues.personType);
+
+    setType(nextType);
+    setPersonType(nextPersonType);
+    setName(String(initialValues.name ?? ""));
+    setLastName(nextPersonType === "juridica" ? "" : String(initialValues.lastName ?? ""));
+    setNationality(
+      nextPersonType === "juridica" ? "" : String(initialValues.nationality ?? "")
+    );
+    setAddress(String(initialValues.address ?? ""));
+    setDni(nextPersonType === "juridica" ? "" : String(initialValues.dni ?? ""));
+    setCuit(String(initialValues.cuit ?? ""));
+    setBirthDate(nextPersonType === "juridica" ? "" : String(initialValues.birthDate ?? ""));
+    setCivilStatus(
+      nextPersonType === "juridica"
+        ? "soltero"
+        : normalizeCivilStatus(initialValues.civilStatus)
+    );
+    setMarriageCount(
+      nextPersonType === "juridica" ? "" : String(initialValues.marriageCount ?? "")
+    );
+    setSpouseName(
+      nextPersonType === "juridica" ? "" : String(initialValues.spouseName ?? "")
+    );
+    setPhone(String(initialValues.phone ?? ""));
+    setEmail(String(initialValues.email ?? ""));
+    setReferredBy(String(initialValues.referredBy ?? ""));
+    setNotes(String(initialValues.notes ?? ""));
+    setTuition(String(initialValues.tuition ?? ""));
+    setConciliationArea(String(initialValues.conciliationArea ?? ""));
+    setSpecialtyArea(String(initialValues.specialtyArea ?? ""));
+    setMsg(null);
+  }, [mode, initialValues]);
+
+  useEffect(() => {
     if (personType === "juridica") {
       setLastName("");
       setBirthDate("");
@@ -116,12 +240,42 @@ export default function ContactForm({
   async function save() {
     setMsg(null);
 
-    if (!name.trim()) {
-      setMsg(personType === "juridica" ? "La razón social es obligatoria." : "El nombre es obligatorio.");
+    const normalizedType = normalizeContactType(type);
+    const normalizedPersonType = normalizePersonType(personType);
+    const normalizedCivilStatus = normalizeCivilStatus(civilStatus);
+
+    const cleanName = name.trim();
+    const cleanLastName = normalizedPersonType === "fisica" ? lastName.trim() : "";
+    const cleanNationality = normalizedPersonType === "fisica" ? nationality.trim() : "";
+    const cleanAddress = address.trim();
+    const cleanDni = normalizedPersonType === "fisica" ? dni.trim() : "";
+    const cleanCuit = cuit.trim();
+    const cleanBirthDate = normalizedPersonType === "fisica" ? birthDate : "";
+    const cleanMarriageCount = normalizedPersonType === "fisica" ? marriageCount.trim() : "";
+    const cleanSpouseName = normalizedPersonType === "fisica" ? spouseName.trim() : "";
+    const cleanPhone = phone.trim();
+    const cleanEmail = email.trim();
+    const cleanReferredBy = referredBy.trim();
+    const cleanNotes = notes.trim();
+    const cleanTuition = tuition.trim();
+    const cleanConciliationArea = conciliationArea.trim();
+    const cleanSpecialtyArea = specialtyArea.trim();
+    const computedFullName = buildFullName(normalizedPersonType, cleanName, cleanLastName);
+
+    if (!cleanName) {
+      setMsg(
+        normalizedPersonType === "juridica"
+          ? "La razón social es obligatoria."
+          : "El nombre es obligatorio."
+      );
       return;
     }
 
-    if (personType === "fisica" && !lastName.trim() && type !== "otro") {
+    if (
+      normalizedPersonType === "fisica" &&
+      !cleanLastName &&
+      normalizedType !== "otro"
+    ) {
       setMsg("El apellido es obligatorio.");
       return;
     }
@@ -129,59 +283,80 @@ export default function ContactForm({
     setSaving(true);
     try {
       const payload: any = {
-        type,
-        personType,
-        name: name.trim(),
-        lastName: personType === "fisica" ? lastName.trim() : "",
-        fullName: fullName.trim(),
-        nameLower: safeLower(fullName),
-        address: address.trim(),
-        dni: personType === "fisica" ? dni.trim() : "",
-        cuit: cuit.trim(),
-        phone: phone.trim(),
-        email: email.trim(),
-        notes: notes.trim(),
-        createdAt: serverTimestamp(),
+        type: normalizedType,
+        personType: normalizedPersonType,
+        name: cleanName,
+        lastName: normalizedPersonType === "fisica" ? cleanLastName : "",
+        fullName: computedFullName,
+        nameLower: safeLower(computedFullName),
+        address: cleanAddress,
+        dni: normalizedPersonType === "fisica" ? cleanDni : "",
+        cuit: cleanCuit,
+        phone: cleanPhone,
+        email: cleanEmail,
+        notes: cleanNotes,
         updatedAt: serverTimestamp(),
-        createdByUid: userUid,
       };
 
-      if (type === "cliente") {
-        payload.nationality = personType === "fisica" ? nationality.trim() : "";
-        payload.birthDate = personType === "fisica" ? birthDate || "" : "";
-        payload.civilStatus = personType === "fisica" ? civilStatus : "";
+      if (normalizedType === "cliente") {
+        payload.nationality = normalizedPersonType === "fisica" ? cleanNationality : "";
+        payload.birthDate = normalizedPersonType === "fisica" ? cleanBirthDate : "";
+        payload.civilStatus = normalizedPersonType === "fisica" ? normalizedCivilStatus : "";
         payload.marriageCount =
-          personType === "fisica" && civilStatus === "casado" ? marriageCount.trim() : "";
+          normalizedPersonType === "fisica" && normalizedCivilStatus === "casado"
+            ? cleanMarriageCount
+            : "";
         payload.spouseName =
-          personType === "fisica" && civilStatus === "casado" ? spouseName.trim() : "";
-        payload.referredBy = referredBy.trim();
+          normalizedPersonType === "fisica" && normalizedCivilStatus === "casado"
+            ? cleanSpouseName
+            : "";
+        payload.referredBy = cleanReferredBy;
+      } else if (normalizedType === "demandado") {
+        payload.nationality = normalizedPersonType === "fisica" ? cleanNationality : "";
+        payload.birthDate = "";
+        payload.civilStatus = "";
+        payload.marriageCount = "";
+        payload.spouseName = "";
+        payload.referredBy = "";
+      } else {
+        payload.nationality = "";
+        payload.birthDate = "";
+        payload.civilStatus = "";
+        payload.marriageCount = "";
+        payload.spouseName = "";
+        payload.referredBy = "";
       }
 
-      if (type === "abogado_contraria") {
-        payload.tuition = tuition.trim();
-      }
+      payload.tuition = normalizedType === "abogado_contraria" ? cleanTuition : "";
+      payload.conciliationArea =
+        normalizedType === "conciliador" ? cleanConciliationArea : "";
+      payload.specialtyArea =
+        normalizedType === "perito" ? cleanSpecialtyArea : "";
 
-      if (type === "demandado") {
-        payload.nationality = personType === "fisica" ? nationality.trim() : "";
-      }
+      if (mode === "edit") {
+        if (!contactId) {
+          throw new Error("Falta contactId para editar.");
+        }
 
-      if (type === "conciliador") {
-        payload.conciliationArea = conciliationArea.trim();
-      }
+        await updateDoc(doc(db, "contacts", contactId), payload);
 
-      if (type === "perito") {
-        payload.specialtyArea = specialtyArea.trim();
-      }
+        onSaved?.({
+          id: contactId,
+          ...payload,
+        });
+      } else {
+        payload.createdAt = serverTimestamp();
+        payload.createdByUid = userUid;
 
-      const ref = await addDoc(collection(db, "contacts"), payload);
+        const ref = await addDoc(collection(db, "contacts"), payload);
 
-      if (onSaved) {
-        onSaved({
+        onSaved?.({
           id: ref.id,
           ...payload,
         });
       }
     } catch (e: any) {
+      console.error("Error guardando contacto:", e);
       setMsg(e?.message ?? "Error guardando contacto");
     } finally {
       setSaving(false);
@@ -198,7 +373,9 @@ export default function ContactForm({
 
       <div className="grid gap-3">
         <label className="grid gap-1">
-          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Tipo de contacto</span>
+          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+            Tipo de contacto
+          </span>
           <select
             value={type}
             onChange={(e) => setType(e.target.value as ContactType)}
@@ -214,7 +391,9 @@ export default function ContactForm({
         </label>
 
         <label className="grid gap-1">
-          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Tipo de persona</span>
+          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+            Tipo de persona
+          </span>
           <select
             value={personType}
             onChange={(e) => setPersonType(e.target.value as PersonType)}
@@ -259,7 +438,9 @@ export default function ContactForm({
               <>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Nacionalidad
+                    </span>
                     <input
                       value={nationality}
                       onChange={(e) => setNationality(e.target.value)}
@@ -268,7 +449,9 @@ export default function ContactForm({
                   </label>
 
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fecha de nacimiento</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Fecha de nacimiento
+                    </span>
                     <input
                       type="date"
                       value={birthDate}
@@ -280,7 +463,9 @@ export default function ContactForm({
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      DNI
+                    </span>
                     <input
                       value={dni}
                       onChange={(e) => setDni(e.target.value)}
@@ -289,7 +474,9 @@ export default function ContactForm({
                   </label>
 
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      CUIT/CUIL
+                    </span>
                     <input
                       value={cuit}
                       onChange={(e) => setCuit(e.target.value)}
@@ -299,7 +486,9 @@ export default function ContactForm({
                 </div>
 
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Estado civil</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    Estado civil
+                  </span>
                   <select
                     value={civilStatus}
                     onChange={(e) => setCivilStatus(e.target.value as CivilStatus)}
@@ -317,7 +506,9 @@ export default function ContactForm({
                 {civilStatus === "casado" ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="grid gap-1">
-                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">En ... nupcias</span>
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                        En ... nupcias
+                      </span>
                       <input
                         value={marriageCount}
                         onChange={(e) => setMarriageCount(e.target.value)}
@@ -327,7 +518,9 @@ export default function ContactForm({
                     </label>
 
                     <label className="grid gap-1">
-                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre cónyuge</span>
+                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                        Nombre cónyuge
+                      </span>
                       <input
                         value={spouseName}
                         onChange={(e) => setSpouseName(e.target.value)}
@@ -339,7 +532,9 @@ export default function ContactForm({
               </>
             ) : (
               <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  CUIT
+                </span>
                 <input
                   value={cuit}
                   onChange={(e) => setCuit(e.target.value)}
@@ -349,7 +544,9 @@ export default function ContactForm({
             )}
 
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Referido por</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Referido por
+              </span>
               <input
                 value={referredBy}
                 onChange={(e) => setReferredBy(e.target.value)}
@@ -362,7 +559,9 @@ export default function ContactForm({
         {type === "abogado_contraria" && (
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                CUIT
+              </span>
               <input
                 value={cuit}
                 onChange={(e) => setCuit(e.target.value)}
@@ -389,7 +588,9 @@ export default function ContactForm({
               <>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nacionalidad</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Nacionalidad
+                    </span>
                     <input
                       value={nationality}
                       onChange={(e) => setNationality(e.target.value)}
@@ -398,7 +599,9 @@ export default function ContactForm({
                   </label>
 
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      DNI
+                    </span>
                     <input
                       value={dni}
                       onChange={(e) => setDni(e.target.value)}
@@ -408,7 +611,9 @@ export default function ContactForm({
                 </div>
 
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    CUIT/CUIL
+                  </span>
                   <input
                     value={cuit}
                     onChange={(e) => setCuit(e.target.value)}
@@ -418,7 +623,9 @@ export default function ContactForm({
               </>
             ) : (
               <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  CUIT
+                </span>
                 <input
                   value={cuit}
                   onChange={(e) => setCuit(e.target.value)}
@@ -434,7 +641,9 @@ export default function ContactForm({
             <div className="grid gap-3 md:grid-cols-2">
               {personType === "fisica" ? (
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    DNI
+                  </span>
                   <input
                     value={dni}
                     onChange={(e) => setDni(e.target.value)}
@@ -458,7 +667,9 @@ export default function ContactForm({
             </div>
 
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Área de conciliación / mediación</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Área de conciliación / mediación
+              </span>
               <input
                 value={conciliationArea}
                 onChange={(e) => setConciliationArea(e.target.value)}
@@ -473,7 +684,9 @@ export default function ContactForm({
             <div className="grid gap-3 md:grid-cols-2">
               {personType === "fisica" ? (
                 <label className="grid gap-1">
-                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
+                  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                    DNI
+                  </span>
                   <input
                     value={dni}
                     onChange={(e) => setDni(e.target.value)}
@@ -497,7 +710,9 @@ export default function ContactForm({
             </div>
 
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Área de especialidad</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Área de especialidad
+              </span>
               <input
                 value={specialtyArea}
                 onChange={(e) => setSpecialtyArea(e.target.value)}
@@ -508,7 +723,9 @@ export default function ContactForm({
         )}
 
         <label className="grid gap-1">
-          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Domicilio</span>
+          <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+            Domicilio
+          </span>
           <input
             value={address}
             onChange={(e) => setAddress(e.target.value)}
@@ -518,7 +735,9 @@ export default function ContactForm({
 
         <div className="grid gap-3 md:grid-cols-2">
           <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Teléfono</span>
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+              Teléfono
+            </span>
             <input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -527,7 +746,9 @@ export default function ContactForm({
           </label>
 
           <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Email</span>
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+              Email
+            </span>
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
