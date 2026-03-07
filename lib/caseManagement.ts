@@ -1,14 +1,15 @@
 // lib/caseManagement.ts
 import {
-  Timestamp,
   doc,
   serverTimestamp,
-  setDoc,
-  getDoc,
   collection,
   addDoc,
   updateDoc,
   runTransaction,
+  getDoc,
+  getDocs,
+  setDoc,
+  deleteDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -48,21 +49,47 @@ export type ManagementMeta = {
   deptoJudicial?: string;
   status?: CaseStatus;
 
+  archiveRequest?: {
+    requestedAt?: any;
+    requestedByUid?: string;
+    requestedByEmail?: string;
+    justification?: string;
+  };
+
   lastLogAt?: any;
   lastLogByUid?: string;
   lastLogTitle?: string;
   createdAt?: any;
+  updatedAt?: any;
+  archivedAt?: any;
+  archivedByUid?: string;
+};
+
+export type ContactCaseLink = {
+  caseId: string;
+  caratula: string;
+  roles: PartyRole[];
   updatedAt?: any;
 };
 
 export function managementMetaRef(caseId: string) {
   return doc(db, "cases", caseId, "management", "meta");
 }
+
 export function logsColRef(caseId: string) {
   return collection(db, "cases", caseId, "logs");
 }
+
 export function partiesColRef(caseId: string) {
   return collection(db, "cases", caseId, "parties");
+}
+
+export function contactCaseLinksColRef(contactId: string) {
+  return collection(db, "contacts", contactId, "caseLinks");
+}
+
+export function contactCaseLinkRef(contactId: string, caseId: string) {
+  return doc(db, "contacts", contactId, "caseLinks", caseId);
 }
 
 export async function ensureManagementInitialized(params: {
@@ -86,8 +113,20 @@ export async function ensureManagementInitialized(params: {
         lastLogTitle: "Inicio de bitácora",
       } satisfies ManagementMeta);
 
-      // log inicial
-      const logR = doc(logsColRef(caseId)); // genera id
+      await updateDoc(managementMetaRef(caseId), {
+  updatedAt: serverTimestamp(),
+  lastLogAt: serverTimestamp(),
+  lastLogByUid: user.uid,
+  lastLogTitle: title,
+});
+
+await updateDoc(doc(db, "cases", caseId), {
+  dashboardLastLogAt: serverTimestamp(),
+  dashboardLastLogTitle: title,
+  dashboardLastLogByEmail: user.email ?? "",
+});
+
+      const logR = doc(logsColRef(caseId));
       tx.set(logR, {
         type: "informativa",
         title: "Inicio de bitácora",
@@ -96,6 +135,7 @@ export async function ensureManagementInitialized(params: {
         createdByUid: uid,
         createdByEmail: email ?? "",
         hasAttachments: false,
+        attachments: [],
       });
     }
   });
@@ -119,20 +159,114 @@ export async function addAutoLog(params: {
     createdByUid: uid,
     createdByEmail: email ?? "",
     hasAttachments: false,
+    attachments: [],
   });
 
   await updateDoc(managementMetaRef(caseId), {
-    updatedAt: serverTimestamp(),
-    lastLogAt: serverTimestamp(),
-    lastLogByUid: uid,
-    lastLogTitle: title,
-  });
+  updatedAt: serverTimestamp(),
+  lastLogAt: serverTimestamp(),
+  lastLogByUid: uid,
+  lastLogTitle: title,
+});
+
+await updateDoc(doc(db, "cases", caseId), {
+  dashboardLastLogAt: serverTimestamp(),
+  dashboardLastLogTitle: title,
+  dashboardLastLogByEmail: email ?? "",
+});
 
   return logRef.id;
 }
 
+export async function syncContactCaseLink(params: {
+  contactId: string;
+  caseId: string;
+  caratula: string;
+  role: PartyRole;
+}) {
+  const { contactId, caseId, caratula, role } = params;
+  const ref = contactCaseLinkRef(contactId, caseId);
+  const snap = await getDoc(ref);
+
+  if (!snap.exists()) {
+    await setDoc(ref, {
+      caseId,
+      caratula: String(caratula ?? "").trim(),
+      roles: [role],
+      updatedAt: serverTimestamp(),
+    } satisfies ContactCaseLink);
+    return;
+  }
+
+  const data = snap.data() as ContactCaseLink;
+  const currentRoles = Array.isArray(data.roles) ? data.roles : [];
+  const nextRoles = Array.from(new Set([...currentRoles, role])) as PartyRole[];
+
+  await updateDoc(ref, {
+    caratula: String(caratula ?? "").trim(),
+    roles: nextRoles,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function removeRoleFromContactCaseLink(params: {
+  contactId: string;
+  caseId: string;
+  role: PartyRole;
+}) {
+  const { contactId, caseId, role } = params;
+  const ref = contactCaseLinkRef(contactId, caseId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as ContactCaseLink;
+  const currentRoles = Array.isArray(data.roles) ? data.roles : [];
+  const nextRoles = currentRoles.filter((r) => r !== role) as PartyRole[];
+
+  if (nextRoles.length === 0) {
+    await deleteDoc(ref);
+    return;
+  }
+
+  await updateDoc(ref, {
+    roles: nextRoles,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function syncCaseCaratulaToContactLinks(params: {
+  caseId: string;
+  caratula: string;
+}) {
+  const { caseId, caratula } = params;
+  const partiesSnap = await getDocs(partiesColRef(caseId));
+
+  const contactIds = Array.from(
+    new Set(
+      partiesSnap.docs
+        .map((d) => {
+          const data = d.data() as any;
+          return String(data?.contactRef?.contactId ?? "").trim();
+        })
+        .filter(Boolean)
+    )
+  );
+
+  await Promise.all(
+    contactIds.map(async (contactId) => {
+      const ref = contactCaseLinkRef(contactId, caseId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return;
+
+      await updateDoc(ref, {
+        caratula: String(caratula ?? "").trim(),
+        updatedAt: serverTimestamp(),
+      });
+    })
+  );
+}
+
 export function logTypeColor(type: LogType) {
-  // Tailwind classes
   switch (type) {
     case "informativa":
       return "bg-sky-100 text-sky-900 border-sky-200";
@@ -151,7 +285,6 @@ export function logTypeColor(type: LogType) {
   }
 }
 
-// Link simple para “Agregar a Google Calendar”
 export function buildGoogleCalendarLink(args: {
   title: string;
   details?: string;
@@ -160,7 +293,6 @@ export function buildGoogleCalendarLink(args: {
   end?: Date;
 }) {
   const fmt = (d: Date) => {
-    // YYYYMMDDTHHMMSSZ
     const pad = (n: number) => String(n).padStart(2, "0");
     const yyyy = d.getUTCFullYear();
     const mm = pad(d.getUTCMonth() + 1);
@@ -172,7 +304,9 @@ export function buildGoogleCalendarLink(args: {
   };
 
   const startUtc = new Date(args.start.getTime());
-  const endUtc = args.end ? new Date(args.end.getTime()) : new Date(args.start.getTime() + 60 * 60 * 1000);
+  const endUtc = args.end
+    ? new Date(args.end.getTime())
+    : new Date(args.start.getTime() + 60 * 60 * 1000);
 
   const params = new URLSearchParams({
     text: args.title,

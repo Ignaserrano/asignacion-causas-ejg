@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -156,11 +156,25 @@ type FeedItem = {
   createdByEmail?: string;
 };
 
+type InactiveItem = {
+  caseId: string;
+  caratula: string;
+  lastLogAtSec?: number;
+};
+
 type ArchiveRequestItem = {
   caseId: string;
   caratula: string;
   requestedAtSec?: number;
   requestedByEmail?: string;
+};
+
+type CaseRow = {
+  id: string;
+  caratulaTentativa?: string;
+  dashboardLastLogAt?: { seconds: number };
+  dashboardLastLogTitle?: string;
+  dashboardLastLogByEmail?: string;
 };
 
 function fmtDateTime(sec?: number) {
@@ -179,9 +193,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   const [feed, setFeed] = useState<FeedItem[]>([]);
-  const [inactive, setInactive] = useState<
-    { caseId: string; caratula: string; lastLogAtSec?: number }[]
-  >([]);
+  const [inactive, setInactive] = useState<InactiveItem[]>([]);
   const [loadingWidgets, setLoadingWidgets] = useState(false);
 
   const [archiveRequests, setArchiveRequests] = useState<ArchiveRequestItem[]>([]);
@@ -230,45 +242,39 @@ export default function DashboardPage() {
           collection(db, "cases"),
           where("confirmedAssigneesUids", "array-contains", user.uid),
           orderBy("createdAt", "desc"),
-          limit(80)
+          limit(200)
         );
+
         const casesSnap = await getDocs(casesQ);
         const myCases = casesSnap.docs.map((d) => ({
           id: d.id,
-          caratula: String((d.data() as any)?.caratulaTentativa ?? ""),
-        }));
+          ...(d.data() as any),
+        })) as CaseRow[];
 
         const now = Date.now();
         const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
 
         const feedTmp: FeedItem[] = [];
-        const inactiveTmp: { caseId: string; caratula: string; lastLogAtSec?: number }[] = [];
+        const inactiveTmp: InactiveItem[] = [];
 
         for (const c of myCases) {
-          const metaSnap = await getDoc(doc(db, "cases", c.id, "management", "meta"));
-          const lastLogAtSec = (metaSnap.data() as any)?.lastLogAt?.seconds as
-            | number
-            | undefined;
+          const lastLogAtSec = c.dashboardLastLogAt?.seconds;
 
           if (!lastLogAtSec || now - lastLogAtSec * 1000 > sixtyDaysMs) {
-            inactiveTmp.push({ caseId: c.id, caratula: c.caratula, lastLogAtSec });
+            inactiveTmp.push({
+              caseId: c.id,
+              caratula: String(c.caratulaTentativa ?? ""),
+              lastLogAtSec,
+            });
           }
 
-          const logsQ = query(
-            collection(db, "cases", c.id, "logs"),
-            orderBy("createdAt", "desc"),
-            limit(1)
-          );
-          const logsSnap = await getDocs(logsQ);
-          const top = logsSnap.docs[0];
-          if (top) {
-            const data = top.data() as any;
+          if (lastLogAtSec) {
             feedTmp.push({
               caseId: c.id,
-              caratula: c.caratula,
-              title: String(data?.title ?? "(sin título)"),
-              createdAtSec: Number(data?.createdAt?.seconds ?? 0),
-              createdByEmail: String(data?.createdByEmail ?? ""),
+              caratula: String(c.caratulaTentativa ?? ""),
+              title: String(c.dashboardLastLogTitle ?? "(sin título)"),
+              createdAtSec: lastLogAtSec,
+              createdByEmail: String(c.dashboardLastLogByEmail ?? ""),
             });
           }
         }
@@ -277,7 +283,7 @@ export default function DashboardPage() {
         inactiveTmp.sort((a, b) => (a.lastLogAtSec ?? 0) - (b.lastLogAtSec ?? 0));
 
         setFeed(feedTmp.slice(0, 20));
-        setInactive(inactiveTmp);
+        setInactive(inactiveTmp.slice(0, 30));
       } catch (e: any) {
         setMsg((prev) => prev ?? (e?.message ?? "Error cargando movimientos/inactividad"));
       } finally {
@@ -364,7 +370,7 @@ export default function DashboardPage() {
         <CardLink
           href="/cases/manage"
           title="Gestión de causas"
-          subtitle="Bitácora, partes, estado, adjuntos y más"
+          subtitle="Bitácora, partes, estado y más"
           icon={<IconManage className="h-5 w-5" />}
         />
 
@@ -445,7 +451,7 @@ export default function DashboardPage() {
             {inactive.length === 0 ? (
               <div className="py-2 text-sm text-gray-700 dark:text-gray-200">Sin alertas 🎉</div>
             ) : (
-              inactive.slice(0, 30).map((c, idx) => (
+              inactive.map((c, idx) => (
                 <a
                   key={idx}
                   href={`/cases/manage/${c.caseId}`}

@@ -7,6 +7,8 @@ import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   addDoc,
   collection,
+  collectionGroup,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -18,11 +20,11 @@ import {
   Timestamp,
   updateDoc,
   where,
-  collectionGroup,
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 
 import AppShell from "@/components/AppShell";
+import ContactForm, { CreatedContact } from "@/components/contacts/ContactForm";
 import { auth, db, storage } from "@/lib/firebase";
 import {
   ensureManagementInitialized,
@@ -36,6 +38,9 @@ import {
   LogType,
   PartyRole,
   ManagementMeta,
+  syncContactCaseLink,
+  removeRoleFromContactCaseLink,
+  syncCaseCaratulaToContactLinks,
 } from "@/lib/caseManagement";
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
@@ -56,7 +61,7 @@ type Party = {
   email?: string;
   phone?: string;
   address?: string;
-  contactType?: string;
+  contactRef?: { contactId: string } | null;
 };
 
 type LogEntry = {
@@ -84,6 +89,7 @@ type LogEntry = {
 
 type ContactDoc = {
   type?: string;
+  personType?: "fisica" | "juridica";
   name?: string;
   lastName?: string;
   fullName?: string;
@@ -110,6 +116,10 @@ type UserDoc = {
   role?: string;
 };
 
+type MetaDraft = Partial<ManagementMeta> & {
+  caratulaTentativa?: string;
+};
+
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
   return new Date(seconds * 1000).toLocaleString();
@@ -131,6 +141,14 @@ function normalizeUrl(url?: string | null) {
   return `https://${raw}`;
 }
 
+function getContactFullName(c?: ContactDoc | null) {
+  if (!c) return "";
+  return (
+    String(c.fullName ?? "").trim() ||
+    `${String(c.name ?? "").trim()} ${String(c.lastName ?? "").trim()}`.trim()
+  );
+}
+
 const STATUS_LABEL: Record<CaseStatus, string> = {
   preliminar: "Preliminar",
   iniciada: "Iniciada",
@@ -149,22 +167,37 @@ const LOGTYPE_LABEL: Record<LogType, string> = {
   sentencia: "Sentencia",
 };
 
-function contactTypeLabel(type?: string) {
-  switch (type) {
-    case "cliente":
-      return "Cliente";
-    case "abogado_contraria":
-      return "Abogado contraria";
-    case "demandado":
-      return "Demandado";
-    case "conciliador":
-      return "Conciliador";
-    case "perito":
-      return "Perito";
-    default:
-      return "Otro";
-  }
-}
+const PROVINCIA_FUEROS = [
+  "civil y comercial",
+  "contencioso administrativo",
+  "familia",
+  "juzgados de paz",
+  "penal",
+  "trabajo",
+];
+
+const PROVINCIA_DEPTOS = [
+  "Avellaneda-Lanús",
+  "Azul",
+  "Bahía Blanca",
+  "Dolores",
+  "Junín",
+  "La Matanza",
+  "La Plata",
+  "Lomas de Zamora",
+  "Mar del Plata",
+  "Mercedes",
+  "Moreno-Gral. Rodríguez",
+  "Morón",
+  "Necochea",
+  "Pergamino",
+  "Quilmes",
+  "San Isidro",
+  "San Martín",
+  "San Nicolás",
+  "Trenque Lauquen",
+  "Zárate-Campana",
+];
 
 function roleLabel(role: PartyRole) {
   switch (role) {
@@ -187,6 +220,21 @@ function roleLabel(role: PartyRole) {
   }
 }
 
+function jurisdiccionLabel(v?: string) {
+  switch (v) {
+    case "nacional":
+      return "Nacional";
+    case "federal":
+      return "Federal";
+    case "caba":
+      return "CABA";
+    case "provincia_bs_as":
+      return "Provincia Bs. As.";
+    default:
+      return valueOrDash(v);
+  }
+}
+
 function Modal({
   open,
   title,
@@ -202,7 +250,7 @@ function Modal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
           <button
@@ -242,15 +290,9 @@ export default function ManageCasePage() {
   const [assignedLawyerEmails, setAssignedLawyerEmails] = useState<string[]>([]);
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
-  const [metaDraft, setMetaDraft] = useState<Partial<ManagementMeta>>({});
+  const [metaDraft, setMetaDraft] = useState<MetaDraft>({});
 
-  const [newPartyName, setNewPartyName] = useState("");
   const [newPartyRole, setNewPartyRole] = useState<PartyRole>("actor");
-  const [newPartyIdentification, setNewPartyIdentification] = useState("");
-  const [newPartyEmail, setNewPartyEmail] = useState("");
-  const [newPartyPhone, setNewPartyPhone] = useState("");
-  const [newPartyAddress, setNewPartyAddress] = useState("");
-  const [newPartyContactType, setNewPartyContactType] = useState("");
 
   const [contactQuery, setContactQuery] = useState("");
   const [contactResults, setContactResults] = useState<Array<{ id: string } & ContactDoc>>([]);
@@ -261,15 +303,6 @@ export default function ManageCasePage() {
   const [contactError, setContactError] = useState<string | null>(null);
 
   const [createContactModalOpen, setCreateContactModalOpen] = useState(false);
-  const [savingContact, setSavingContact] = useState(false);
-  const [newContactType, setNewContactType] = useState("cliente");
-  const [newContactName, setNewContactName] = useState("");
-  const [newContactLastName, setNewContactLastName] = useState("");
-  const [newContactDni, setNewContactDni] = useState("");
-  const [newContactCuit, setNewContactCuit] = useState("");
-  const [newContactPhone, setNewContactPhone] = useState("");
-  const [newContactEmail, setNewContactEmail] = useState("");
-  const [newContactAddress, setNewContactAddress] = useState("");
 
   const [logType, setLogType] = useState<LogType>("informativa");
   const [logTitle, setLogTitle] = useState("");
@@ -289,6 +322,7 @@ export default function ManageCasePage() {
   const [archiveRequestSaving, setArchiveRequestSaving] = useState(false);
 
   const [archivingCase, setArchivingCase] = useState(false);
+  const [deletingPartyId, setDeletingPartyId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -421,9 +455,7 @@ export default function ManageCasePage() {
           return;
         }
 
-        const assignedDocs = await Promise.all(
-          assignedUids.map((uid) => getDoc(doc(db, "users", uid)))
-        );
+        const assignedDocs = await Promise.all(assignedUids.map((uid) => getDoc(doc(db, "users", uid))));
         const assigned = assignedDocs
           .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
           .map((e) => String(e).trim())
@@ -497,38 +529,33 @@ export default function ManageCasePage() {
   }, [contactQuery]);
 
   function selectContact(c: { id: string } & ContactDoc) {
-    const fullName =
-      String(c.fullName ?? "").trim() ||
-      `${String(c.name ?? "").trim()} ${String(c.lastName ?? "").trim()}`.trim();
-
-    const identification = String(c.dni ?? c.cuit ?? "").trim();
-
+    const fullName = getContactFullName(c);
     setSelectedContact(c);
     setContactQuery(fullName);
     setContactResults([]);
-
-    setNewPartyName(fullName);
-    setNewPartyIdentification(identification);
-    setNewPartyEmail(String(c.email ?? ""));
-    setNewPartyPhone(String(c.phone ?? ""));
-    setNewPartyAddress(String(c.address ?? ""));
-    setNewPartyContactType(String(c.type ?? ""));
   }
 
   function clearSelectedContact() {
     setSelectedContact(null);
     setContactQuery("");
     setContactResults([]);
-    setNewPartyName("");
-    setNewPartyIdentification("");
-    setNewPartyEmail("");
-    setNewPartyPhone("");
-    setNewPartyAddress("");
-    setNewPartyContactType("");
+    setNewPartyRole("actor");
+  }
+
+  function handleContactCreated(contact: CreatedContact) {
+    const created = {
+      id: contact.id,
+      fullName: contact.fullName,
+      name: contact.fullName,
+    } as { id: string } & ContactDoc;
+
+    setCreateContactModalOpen(false);
+    selectContact(created);
   }
 
   function openMetaModal() {
     setMetaDraft({
+      caratulaTentativa: caseDoc?.caratulaTentativa ?? "",
       physicalFolder: meta?.physicalFolder ?? "",
       driveFolderUrl: meta?.driveFolderUrl ?? "",
       expedienteNumber: meta?.expedienteNumber ?? "",
@@ -543,7 +570,8 @@ export default function ManageCasePage() {
 
   async function saveMeta(
     patch: Partial<ManagementMeta>,
-    maybeStatusChanged?: { from?: CaseStatus; to?: CaseStatus }
+    maybeStatusChanged?: { from?: CaseStatus; to?: CaseStatus },
+    casePatch?: Partial<CaseDoc>
   ) {
     if (!user) return;
     if (!canWrite) {
@@ -558,6 +586,22 @@ export default function ManageCasePage() {
         ...patch,
         updatedAt: serverTimestamp(),
       });
+
+      const nextCaratula = String(casePatch?.caratulaTentativa ?? caseDoc?.caratulaTentativa ?? "").trim();
+      const currentCaratula = String(caseDoc?.caratulaTentativa ?? "").trim();
+
+      if (casePatch && Object.keys(casePatch).length > 0) {
+        await updateDoc(doc(db, "cases", caseId), {
+          ...casePatch,
+        });
+      }
+
+      if (nextCaratula !== currentCaratula) {
+        await syncCaseCaratulaToContactLinks({
+          caseId,
+          caratula: nextCaratula,
+        });
+      }
 
       if (
         maybeStatusChanged?.from &&
@@ -583,6 +627,8 @@ export default function ManageCasePage() {
   async function saveMetaFromModal() {
     const from = meta?.status ?? "preliminar";
     const to = (metaDraft.status as CaseStatus) ?? from;
+    const nextJurisdiccion =
+      (metaDraft.jurisdiccion as any) ?? caseDoc?.jurisdiccion ?? "provincia_bs_as";
 
     await saveMeta(
       {
@@ -591,30 +637,38 @@ export default function ManageCasePage() {
         expedienteNumber: String(metaDraft.expedienteNumber ?? ""),
         court: String(metaDraft.court ?? ""),
         fuero: String(metaDraft.fuero ?? ""),
-        jurisdiccion: (metaDraft.jurisdiccion as any) ?? caseDoc?.jurisdiccion ?? "provincia_bs_as",
-        deptoJudicial: String(metaDraft.deptoJudicial ?? ""),
+        jurisdiccion: nextJurisdiccion,
+        deptoJudicial:
+          nextJurisdiccion === "provincia_bs_as" ? String(metaDraft.deptoJudicial ?? "") : "",
         status: to,
       },
-      { from, to }
+      { from, to },
+      {
+        caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
+        jurisdiccion: nextJurisdiccion,
+      }
     );
   }
 
   async function addParty() {
     if (!user) return;
     if (!canWrite) return alert("Sin permisos.");
+    if (!selectedContact) return alert("Seleccioná un contacto existente.");
 
-    const name = newPartyName.trim();
-    if (!name) return alert("Ingresá un nombre.");
+    const name = getContactFullName(selectedContact).trim();
+    if (!name) return alert("El contacto seleccionado no tiene nombre o razón social.");
+
+    const contactId = selectedContact.id;
+    const caratula = String(caseDoc?.caratulaTentativa ?? "").trim();
 
     await addDoc(partiesColRef(caseId), {
       name,
       role: newPartyRole,
-      identification: newPartyIdentification.trim(),
-      email: newPartyEmail.trim(),
-      phone: newPartyPhone.trim(),
-      address: newPartyAddress.trim(),
-      contactType: newPartyContactType.trim(),
-      contactRef: selectedContact ? { contactId: selectedContact.id } : null,
+      identification: String(selectedContact.dni ?? selectedContact.cuit ?? "").trim(),
+      email: String(selectedContact.email ?? "").trim(),
+      phone: String(selectedContact.phone ?? "").trim(),
+      address: String(selectedContact.address ?? "").trim(),
+      contactRef: { contactId },
       createdAt: serverTimestamp(),
       createdByUid: user.uid,
     });
@@ -623,53 +677,46 @@ export default function ManageCasePage() {
       updatedAt: serverTimestamp(),
     });
 
+    await syncContactCaseLink({
+      contactId,
+      caseId,
+      caratula,
+      role: newPartyRole,
+    });
+
     clearSelectedContact();
-    setNewPartyRole("actor");
   }
 
-  async function createContact() {
+  async function removeParty(partyId: string) {
     if (!user) return;
     if (!canWrite) return alert("Sin permisos.");
 
-    const name = newContactName.trim();
-    const lastName = newContactLastName.trim();
-    const fullName = `${name} ${lastName}`.trim();
+    const party = parties.find((p) => p.id === partyId);
+    if (!party) return;
 
-    if (!fullName) return alert("Completá al menos nombre o apellido.");
+    const ok = window.confirm(
+      "¿Confirmás eliminar esta parte de esta causa? Esto no borrará el contacto de la agenda."
+    );
+    if (!ok) return;
 
-    setSavingContact(true);
+    setDeletingPartyId(partyId);
     try {
-      const refDoc = await addDoc(collection(db, "contacts"), {
-        type: newContactType,
-        name,
-        lastName,
-        fullName,
-        nameLower: safeLower(fullName),
-        dni: newContactDni.trim(),
-        cuit: newContactCuit.trim(),
-        phone: newContactPhone.trim(),
-        email: newContactEmail.trim(),
-        address: newContactAddress.trim(),
-        createdAt: serverTimestamp(),
-        createdByUid: user.uid,
+      await deleteDoc(doc(partiesColRef(caseId), partyId));
+
+      await updateDoc(managementMetaRef(caseId), {
+        updatedAt: serverTimestamp(),
       });
 
-      const created = await getDoc(refDoc);
-      if (created.exists()) {
-        selectContact({ id: created.id, ...(created.data() as any) });
+      const contactId = String(party.contactRef?.contactId ?? "").trim();
+      if (contactId) {
+        await removeRoleFromContactCaseLink({
+          contactId,
+          caseId,
+          role: party.role,
+        });
       }
-
-      setCreateContactModalOpen(false);
-      setNewContactType("cliente");
-      setNewContactName("");
-      setNewContactLastName("");
-      setNewContactDni("");
-      setNewContactCuit("");
-      setNewContactPhone("");
-      setNewContactEmail("");
-      setNewContactAddress("");
     } finally {
-      setSavingContact(false);
+      setDeletingPartyId(null);
     }
   }
 
@@ -776,11 +823,17 @@ export default function ManageCasePage() {
       });
 
       await updateDoc(managementMetaRef(caseId), {
-        updatedAt: serverTimestamp(),
-        lastLogAt: serverTimestamp(),
-        lastLogByUid: user.uid,
-        lastLogTitle: title,
-      });
+  updatedAt: serverTimestamp(),
+  lastLogAt: serverTimestamp(),
+  lastLogByUid: user.uid,
+  lastLogTitle: title,
+});
+
+await updateDoc(doc(db, "cases", caseId), {
+  dashboardLastLogAt: serverTimestamp(),
+  dashboardLastLogTitle: title,
+  dashboardLastLogByEmail: user.email ?? "",
+});
 
       setLogTitle("");
       setLogBody("");
@@ -887,6 +940,13 @@ export default function ManageCasePage() {
 
   const driveFolderHref = normalizeUrl(meta?.driveFolderUrl);
 
+  const showNoContactsFound =
+    contactQuery.trim().length >= 2 &&
+    !contactLoading &&
+    !contactError &&
+    contactResults.length === 0 &&
+    !selectedContact;
+
   return (
     <AppShell
       title="Gestionar causa"
@@ -980,6 +1040,10 @@ export default function ManageCasePage() {
 
               <div className="mt-3 grid gap-2 text-sm text-gray-800 dark:text-gray-100">
                 <div>
+                  <span className="font-black">Carátula:</span>{" "}
+                  <span>{valueOrDash(caseDoc.caratulaTentativa)}</span>
+                </div>
+                <div>
                   <span className="font-black">Carpeta física:</span>{" "}
                   <span>{valueOrDash(meta?.physicalFolder)}</span>
                 </div>
@@ -1013,7 +1077,7 @@ export default function ManageCasePage() {
                 </div>
                 <div>
                   <span className="font-black">Jurisdicción:</span>{" "}
-                  <span>{valueOrDash(meta?.jurisdiccion ?? caseDoc?.jurisdiccion)}</span>
+                  <span>{jurisdiccionLabel(meta?.jurisdiccion ?? caseDoc?.jurisdiccion)}</span>
                 </div>
                 <div>
                   <span className="font-black">Departamento judicial:</span>{" "}
@@ -1025,11 +1089,7 @@ export default function ManageCasePage() {
                 </div>
                 <div>
                   <span className="font-black">Abogados asignados:</span>{" "}
-                  <span>
-                    {assignedLawyerEmails.length > 0
-                      ? assignedLawyerEmails.join(", ")
-                      : "-"}
-                  </span>
+                  <span>{assignedLawyerEmails.length > 0 ? assignedLawyerEmails.join(", ") : "-"}</span>
                 </div>
               </div>
             </div>
@@ -1047,24 +1107,32 @@ export default function ManageCasePage() {
                   parties.map((p, idx) => (
                     <div
                       key={p.id}
-                      className={`p-3 ${idx % 2 === 0 ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/40"}`}
+                      className={`flex items-start justify-between gap-3 p-3 ${
+                        idx % 2 === 0 ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/40"
+                      }`}
                     >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">{p.name}</div>
-                        {p.contactType ? (
-                          <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[10px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
-                            {contactTypeLabel(p.contactType)}
-                          </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {roleLabel(p.role).toUpperCase()}: {p.name}
+                        </div>
+
+                        {p.email || p.phone ? (
+                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                            {p.email ? p.email : ""}
+                            {p.email && p.phone ? " · " : ""}
+                            {p.phone ? p.phone : ""}
+                          </div>
                         ) : null}
                       </div>
 
-                      <div className="text-xs text-gray-600 dark:text-gray-300">
-                        Rol: {roleLabel(p.role)}
-                        {p.identification ? ` · ${p.identification}` : ""}
-                        {p.email ? ` · ${p.email}` : ""}
-                        {p.phone ? ` · ${p.phone}` : ""}
-                        {p.address ? ` · ${p.address}` : ""}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeParty(p.id)}
+                        disabled={!canWrite || deletingPartyId === p.id}
+                        className="shrink-0 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+                      >
+                        {deletingPartyId === p.id ? "Eliminando..." : "Eliminar"}
+                      </button>
                     </div>
                   ))
                 )}
@@ -1076,13 +1144,13 @@ export default function ManageCasePage() {
                 <div className="mt-3">
                   <div className="relative">
                     <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                      Buscar en contactos
+                      Buscar por apellido, nombre o razón social
                     </label>
 
                     <div className="mt-1 flex gap-2">
                       <input
                         className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                        placeholder="Buscar por apellido y/o nombre…"
+                        placeholder="Buscar por apellido, nombre o razón social"
                         value={contactQuery}
                         onChange={(e) => {
                           setContactQuery(e.target.value);
@@ -1108,12 +1176,16 @@ export default function ManageCasePage() {
                       <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">{contactError}</div>
                     ) : null}
 
+                    {showNoContactsFound ? (
+                      <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                        No hay contactos con ese nombre.
+                      </div>
+                    ) : null}
+
                     {contactResults.length > 0 ? (
                       <div className="absolute z-20 mt-2 w-full rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-800 dark:bg-gray-900">
                         {contactResults.map((c) => {
-                          const fullName =
-                            String(c.fullName ?? "").trim() ||
-                            `${String(c.name ?? "").trim()} ${String(c.lastName ?? "").trim()}`.trim();
+                          const fullName = getContactFullName(c);
 
                           return (
                             <button
@@ -1123,20 +1195,15 @@ export default function ManageCasePage() {
                               className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40"
                               disabled={!canWrite}
                             >
-                              <div className="flex flex-wrap items-center gap-2">
-                                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                                  {fullName || "(sin nombre)"}
-                                </div>
-                                <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[10px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
-                                  {contactTypeLabel(c.type)}
-                                </span>
+                              <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                                {fullName || "(sin nombre)"}
                               </div>
 
                               <div className="text-xs text-gray-600 dark:text-gray-300">
                                 {c.dni ? `DNI: ${c.dni}` : ""}
                                 {c.cuit ? `${c.dni ? " · " : ""}CUIT/CUIL: ${c.cuit}` : ""}
-                                {c.email ? ` · ${c.email}` : ""}
-                                {c.phone ? ` · ${c.phone}` : ""}
+                                {c.email ? `${c.dni || c.cuit ? " · " : ""}${c.email}` : ""}
+                                {c.phone ? `${c.dni || c.cuit || c.email ? " · " : ""}${c.phone}` : ""}
                               </div>
                             </button>
                           );
@@ -1146,99 +1213,63 @@ export default function ManageCasePage() {
                   </div>
 
                   {selectedContact ? (
-                    <div className="mt-2 rounded-xl border border-green-200 bg-green-50 p-2 text-xs text-green-900">
-                      Contacto seleccionado:{" "}
-                      <b>
-                        {selectedContact.fullName ||
-                          `${selectedContact.name ?? ""} ${selectedContact.lastName ?? ""}`.trim()}
-                      </b>
-                      {selectedContact.type ? ` · ${contactTypeLabel(selectedContact.type)}` : ""}
+                    <div className="mt-3 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-900">
+                      <div className="font-black">{getContactFullName(selectedContact)}</div>
+
+                      <div className="mt-1 text-xs">
+                        {selectedContact.dni ? `DNI: ${selectedContact.dni}` : ""}
+                        {selectedContact.cuit
+                          ? `${selectedContact.dni ? " · " : ""}CUIT/CUIL: ${selectedContact.cuit}`
+                          : ""}
+                        {selectedContact.email
+                          ? `${selectedContact.dni || selectedContact.cuit ? " · " : ""}${selectedContact.email}`
+                          : ""}
+                        {selectedContact.phone
+                          ? `${selectedContact.dni || selectedContact.cuit || selectedContact.email ? " · " : ""}${selectedContact.phone}`
+                          : ""}
+                      </div>
+
+                      {selectedContact.address ? (
+                        <div className="mt-1 text-xs">Domicilio: {selectedContact.address}</div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
 
-                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  <div className="md:col-span-2">
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                      Nombre / Razón social
-                    </label>
-                    <input
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyName}
-                      onChange={(e) => setNewPartyName(e.target.value)}
-                      disabled={!canWrite}
-                    />
-                  </div>
+                {selectedContact ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <div>
+                      <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                        Agregar parte
+                      </label>
+                      <select
+                        className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                        value={newPartyRole}
+                        onChange={(e) => setNewPartyRole(e.target.value as PartyRole)}
+                        disabled={!canWrite}
+                      >
+                        <option value="actor">Actor</option>
+                        <option value="demandado">Demandado</option>
+                        <option value="citado_garantia">Citado en garantía</option>
+                        <option value="imputado">Imputado</option>
+                        <option value="querellante">Querellante</option>
+                        <option value="causante">Causante</option>
+                        <option value="fallido">Fallido</option>
+                        <option value="otro">Otro</option>
+                      </select>
+                    </div>
 
-                  <div>
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Rol</label>
-                    <select
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyRole}
-                      onChange={(e) => setNewPartyRole(e.target.value as any)}
-                      disabled={!canWrite}
-                    >
-                      <option value="actor">Actor</option>
-                      <option value="demandado">Demandado</option>
-                      <option value="citado_garantia">Citado en garantía</option>
-                      <option value="imputado">Imputado</option>
-                      <option value="querellante">Querellante</option>
-                      <option value="causante">Causante</option>
-                      <option value="fallido">Fallido</option>
-                      <option value="otro">Otro</option>
-                    </select>
+                    <div className="flex items-end">
+                      <button
+                        className="w-full rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+                        disabled={!canWrite}
+                        onClick={addParty}
+                      >
+                        Agregar parte
+                      </button>
+                    </div>
                   </div>
-
-                  <div>
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                      DNI / CUIT / CUIL
-                    </label>
-                    <input
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyIdentification}
-                      onChange={(e) => setNewPartyIdentification(e.target.value)}
-                      disabled={!canWrite}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Email</label>
-                    <input
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyEmail}
-                      onChange={(e) => setNewPartyEmail(e.target.value)}
-                      disabled={!canWrite}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Teléfono</label>
-                    <input
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyPhone}
-                      onChange={(e) => setNewPartyPhone(e.target.value)}
-                      disabled={!canWrite}
-                    />
-                  </div>
-
-                  <div className="md:col-span-2">
-                    <label className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Domicilio</label>
-                    <input
-                      className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      value={newPartyAddress}
-                      onChange={(e) => setNewPartyAddress(e.target.value)}
-                      disabled={!canWrite}
-                    />
-                  </div>
-
-                  <button
-                    className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50 md:col-span-2"
-                    disabled={!canWrite}
-                    onClick={addParty}
-                  >
-                    Agregar parte
-                  </button>
-                </div>
+                ) : null}
 
                 <div className="mt-3 text-xs text-gray-600 dark:text-gray-300">
                   ¿No existe el contacto?{" "}
@@ -1264,7 +1295,7 @@ export default function ManageCasePage() {
                 <select
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logType}
-                  onChange={(e) => setLogType(e.target.value as any)}
+                  onChange={(e) => setLogType(e.target.value as LogType)}
                   disabled={!canWrite}
                 >
                   {Object.keys(LOGTYPE_LABEL).map((k) => (
@@ -1367,7 +1398,7 @@ export default function ManageCasePage() {
                     <select
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={sentResult}
-                      onChange={(e) => setSentResult(e.target.value as any)}
+                      onChange={(e) => setSentResult(e.target.value as "ganado" | "perdido" | "empatado")}
                       disabled={!canWrite}
                     >
                       <option value="ganado">Ganado</option>
@@ -1423,7 +1454,9 @@ export default function ManageCasePage() {
                   return (
                     <div
                       key={l.id}
-                      className={`rounded-xl p-3 ${idx % 2 === 0 ? "bg-gray-50 dark:bg-gray-800/40" : "bg-white dark:bg-gray-900"}`}
+                      className={`rounded-xl p-3 ${
+                        idx % 2 === 0 ? "bg-gray-50 dark:bg-gray-800/40" : "bg-white dark:bg-gray-900"
+                      }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="min-w-0">
@@ -1436,7 +1469,6 @@ export default function ManageCasePage() {
                             <span className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
                               {l.title}
                             </span>
-                            {l.hasAttachments ? <span title="Con adjuntos" className="text-xs">📎</span> : null}
                           </div>
                           <div className="text-xs text-gray-600 dark:text-gray-300">
                             {formatDateFromSeconds(createdAt)} · {l.createdByEmail || l.createdByUid}
@@ -1491,14 +1523,16 @@ export default function ManageCasePage() {
             <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-800">
               {!archiveRequestDone ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setArchiveRequestOpen((v) => !v)}
-                    disabled={!canWrite}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                  >
-                    {archiveStatusText}
-                  </button>
+                  <div className="flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setArchiveRequestOpen((v) => !v)}
+                      disabled={!canWrite}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                    >
+                      {archiveStatusText}
+                    </button>
+                  </div>
 
                   {archiveRequestOpen ? (
                     <div className="mt-3 grid gap-3">
@@ -1514,37 +1548,50 @@ export default function ManageCasePage() {
                         />
                       </label>
 
-                      <div>
+                      <div className="flex justify-center">
                         <button
                           type="button"
                           onClick={submitArchiveRequest}
                           disabled={!canWrite || archiveRequestSaving}
                           className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
                         >
-                          {archiveRequestSaving
-                            ? "Enviando..."
-                            : "Confirmar solicitud de archivo"}
+                          {archiveRequestSaving ? "Enviando..." : "Confirmar solicitud de archivo"}
                         </button>
                       </div>
                     </div>
                   ) : null}
                 </>
               ) : (
-                <button
-                  type="button"
-                  disabled
-                  className="rounded-xl border border-gray-300 bg-gray-100 px-3 py-2 text-sm font-extrabold text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
-                >
-                  Solicitud de archivo realizada
-                </button>
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    disabled
+                    className="rounded-xl border border-gray-300 bg-gray-100 px-3 py-2 text-sm font-extrabold text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                  >
+                    Solicitud de archivo realizada
+                  </button>
+                </div>
               )}
             </div>
           </div>
         </>
       )}
 
-      <Modal open={metaModalOpen} title="Modificar datos de gestión" onClose={() => setMetaModalOpen(false)}>
+      <Modal
+        open={metaModalOpen}
+        title="Modificar datos de gestión"
+        onClose={() => setMetaModalOpen(false)}
+      >
         <div className="grid gap-3">
+          <label className="grid gap-1">
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Carátula</span>
+            <input
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              value={String(metaDraft.caratulaTentativa ?? "")}
+              onChange={(e) => setMetaDraft((m) => ({ ...m, caratulaTentativa: e.target.value }))}
+            />
+          </label>
+
           <label className="grid gap-1">
             <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
               Carpeta física (opcional)
@@ -1590,20 +1637,24 @@ export default function ManageCasePage() {
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fuero</span>
-              <input
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                value={String(metaDraft.fuero ?? "")}
-                onChange={(e) => setMetaDraft((m) => ({ ...m, fuero: e.target.value }))}
-              />
-            </label>
-
-            <label className="grid gap-1">
               <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Jurisdicción</span>
               <select
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as")}
-                onChange={(e) => setMetaDraft((m) => ({ ...m, jurisdiccion: e.target.value as any }))}
+                onChange={(e) =>
+                  setMetaDraft((m) => {
+                    const next = e.target.value as any;
+                    return {
+                      ...m,
+                      jurisdiccion: next,
+                      fuero:
+                        next === "provincia_bs_as"
+                          ? String(m.fuero ?? "")
+                          : String(m.fuero ?? ""),
+                      deptoJudicial: next === "provincia_bs_as" ? String(m.deptoJudicial ?? "") : "",
+                    };
+                  })
+                }
               >
                 <option value="nacional">Nacional</option>
                 <option value="federal">Federal</option>
@@ -1611,6 +1662,33 @@ export default function ManageCasePage() {
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
               </select>
             </label>
+
+            {(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion) === "provincia_bs_as" ? (
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fuero</span>
+                <select
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={String(metaDraft.fuero ?? "")}
+                  onChange={(e) => setMetaDraft((m) => ({ ...m, fuero: e.target.value }))}
+                >
+                  <option value="">Seleccionar…</option>
+                  {PROVINCIA_FUEROS.map((fuero) => (
+                    <option key={fuero} value={fuero}>
+                      {fuero.charAt(0).toUpperCase() + fuero.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fuero</span>
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={String(metaDraft.fuero ?? "")}
+                  onChange={(e) => setMetaDraft((m) => ({ ...m, fuero: e.target.value }))}
+                />
+              </label>
+            )}
           </div>
 
           {(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion) === "provincia_bs_as" ? (
@@ -1618,11 +1696,18 @@ export default function ManageCasePage() {
               <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
                 Departamento judicial
               </span>
-              <input
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              <select
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.deptoJudicial ?? "")}
                 onChange={(e) => setMetaDraft((m) => ({ ...m, deptoJudicial: e.target.value }))}
-              />
+              >
+                <option value="">Seleccionar…</option>
+                {PROVINCIA_DEPTOS.map((depto) => (
+                  <option key={depto} value={depto}>
+                    {depto}
+                  </option>
+                ))}
+              </select>
             </label>
           ) : null}
 
@@ -1667,107 +1752,15 @@ export default function ManageCasePage() {
         title="Crear contacto"
         onClose={() => setCreateContactModalOpen(false)}
       >
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Tipo</span>
-            <select
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactType}
-              onChange={(e) => setNewContactType(e.target.value)}
-            >
-              <option value="cliente">Cliente</option>
-              <option value="abogado_contraria">Abogado contraria</option>
-              <option value="demandado">Demandado</option>
-              <option value="conciliador">Conciliador</option>
-              <option value="perito">Perito</option>
-              <option value="otro">Otro</option>
-            </select>
-          </label>
-
-          <div />
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nombre</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactName}
-              onChange={(e) => setNewContactName(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Apellido</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactLastName}
-              onChange={(e) => setNewContactLastName(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">DNI</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactDni}
-              onChange={(e) => setNewContactDni(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">CUIT/CUIL</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactCuit}
-              onChange={(e) => setNewContactCuit(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Teléfono</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactPhone}
-              onChange={(e) => setNewContactPhone(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Email</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactEmail}
-              onChange={(e) => setNewContactEmail(e.target.value)}
-            />
-          </label>
-
-          <label className="grid gap-1 md:col-span-2">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Domicilio</span>
-            <input
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-              value={newContactAddress}
-              onChange={(e) => setNewContactAddress(e.target.value)}
-            />
-          </label>
-
-          <div className="flex flex-wrap gap-2 pt-2 md:col-span-2">
-            <button
-              type="button"
-              onClick={createContact}
-              disabled={savingContact}
-              className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
-            >
-              {savingContact ? "Guardando..." : "Guardar contacto"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCreateContactModalOpen(false)}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-            >
-              Cancelar carga de contacto
-            </button>
-          </div>
-        </div>
+        {user ? (
+          <ContactForm
+            userUid={user.uid}
+            onSaved={handleContactCreated}
+            onCancel={() => setCreateContactModalOpen(false)}
+            submitLabel="Guardar contacto"
+            cancelLabel="Cancelar"
+          />
+        ) : null}
       </Modal>
     </AppShell>
   );

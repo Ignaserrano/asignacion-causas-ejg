@@ -18,6 +18,7 @@ import {
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import { PartyRole } from "@/lib/caseManagement";
 
 type ContactRow = {
   id: string;
@@ -41,6 +42,12 @@ type SortOption =
   | "nameAsc"
   | "nameDesc";
 
+type ContactCaseRow = {
+  caseId: string;
+  caratula: string;
+  roles: PartyRole[];
+};
+
 const PAGE_SIZE = 25;
 
 function safeText(value: any) {
@@ -63,6 +70,27 @@ function labelType(type?: string) {
       return "Conciliador";
     case "perito":
       return "Perito";
+    default:
+      return "Otro";
+  }
+}
+
+function roleLabel(role?: PartyRole) {
+  switch (role) {
+    case "actor":
+      return "Actor";
+    case "demandado":
+      return "Demandado";
+    case "citado_garantia":
+      return "Citado en garantía";
+    case "imputado":
+      return "Imputado";
+    case "querellante":
+      return "Querellante";
+    case "causante":
+      return "Causante";
+    case "fallido":
+      return "Fallido";
     default:
       return "Otro";
   }
@@ -152,6 +180,38 @@ function compareContacts(a: ContactRow, b: ContactRow, sort: SortOption) {
   }
 }
 
+function Modal({
+  open,
+  title,
+  children,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            Cerrar
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function ContactsListPage() {
   const router = useRouter();
 
@@ -168,6 +228,12 @@ export default function ContactsListPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   const [page, setPage] = useState(1);
+
+  const [casesModalOpen, setCasesModalOpen] = useState(false);
+  const [casesModalContactName, setCasesModalContactName] = useState("");
+  const [casesLoading, setCasesLoading] = useState(false);
+  const [casesError, setCasesError] = useState<string | null>(null);
+  const [contactCases, setContactCases] = useState<ContactCaseRow[]>([]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -219,8 +285,6 @@ export default function ContactsListPage() {
       setMsg(null);
 
       try {
-        // Se cargan más contactos y luego se resuelve búsqueda/filtro/orden del lado del cliente.
-        // Si en el futuro la agenda crece mucho, conviene indexar y paginar directamente en Firestore.
         const qRef = query(
           collection(db, "contacts"),
           orderBy("nameLower", "asc"),
@@ -292,6 +356,47 @@ export default function ContactsListPage() {
 
   const fromRow = filteredRows.length === 0 ? 0 : (Math.min(page, totalPages) - 1) * PAGE_SIZE + 1;
   const toRow = Math.min(Math.min(page, totalPages) * PAGE_SIZE, filteredRows.length);
+
+  async function openCasesModal(contact: ContactRow) {
+    const contactName = getDisplayName(contact);
+
+    setCasesModalOpen(true);
+    setCasesModalContactName(contactName);
+    setCasesLoading(true);
+    setCasesError(null);
+    setContactCases([]);
+
+    try {
+      const snap = await getDocs(
+        query(
+          collection(db, "contacts", contact.id, "caseLinks"),
+          orderBy("caratula", "asc"),
+          limit(200)
+        )
+      );
+
+      const rows = snap.docs.map((d) => {
+        const data = d.data() as any;
+        return {
+          caseId: String(data?.caseId ?? d.id),
+          caratula: String(data?.caratula ?? "").trim() || "(sin carátula)",
+          roles: Array.isArray(data?.roles) ? (data.roles as PartyRole[]) : [],
+        } satisfies ContactCaseRow;
+      });
+
+      setContactCases(rows);
+    } catch (e: any) {
+      setCasesError(e?.message ?? "No se pudieron cargar las causas de este contacto.");
+      setContactCases([]);
+    } finally {
+      setCasesLoading(false);
+    }
+  }
+
+  function goToCase(caseId: string) {
+    setCasesModalOpen(false);
+    router.push(`/cases/${caseId}`);
+  }
 
   return (
     <AppShell
@@ -384,10 +489,11 @@ export default function ContactsListPage() {
       ) : (
         <>
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <div className="hidden grid-cols-[2.2fr_1.2fr_1.8fr_auto] gap-3 border-b border-gray-200 px-4 py-3 text-xs font-black uppercase tracking-wide text-gray-600 dark:border-gray-800 dark:text-gray-300 md:grid">
+            <div className="hidden grid-cols-[2.2fr_1.1fr_1.6fr_auto_auto] gap-3 border-b border-gray-200 px-4 py-3 text-xs font-black uppercase tracking-wide text-gray-600 dark:border-gray-800 dark:text-gray-300 md:grid">
               <div>Nombre y apellido</div>
               <div>Teléfono</div>
               <div>Email</div>
+              <div>Causas</div>
               <div>Ver</div>
             </div>
 
@@ -395,7 +501,7 @@ export default function ContactsListPage() {
               {paginatedRows.map((c) => (
                 <div
                   key={c.id}
-                  className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1.2fr_1.8fr_auto] md:items-center"
+                  className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1.1fr_1.6fr_auto_auto] md:items-center"
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -413,6 +519,16 @@ export default function ContactsListPage() {
                       {" · "}
                       {c.email ? c.email : "Email: -"}
                     </div>
+
+                    <div className="mt-2 md:hidden">
+                      <button
+                        type="button"
+                        onClick={() => openCasesModal(c)}
+                        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                      >
+                        Ver causas de este contacto
+                      </button>
+                    </div>
                   </div>
 
                   <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
@@ -421,6 +537,16 @@ export default function ContactsListPage() {
 
                   <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
                     {c.email || "-"}
+                  </div>
+
+                  <div className="hidden md:flex md:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => openCasesModal(c)}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                    >
+                      Ver causas
+                    </button>
                   </div>
 
                   <div className="flex md:justify-end">
@@ -465,6 +591,63 @@ export default function ContactsListPage() {
           </div>
         </>
       )}
+
+      <Modal
+        open={casesModalOpen}
+        title={`Causas de ${casesModalContactName}`}
+        onClose={() => setCasesModalOpen(false)}
+      >
+        {casesLoading ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            Cargando causas...
+          </div>
+        ) : casesError ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            ⚠️ {casesError}
+          </div>
+        ) : contactCases.length === 0 ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            Este contacto no participa en ninguna causa cargada.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+            <div className="hidden grid-cols-[2fr_1fr] gap-3 border-b border-gray-200 px-4 py-3 text-xs font-black uppercase tracking-wide text-gray-600 dark:border-gray-800 dark:text-gray-300 md:grid">
+              <div>Carátula</div>
+              <div>Rol</div>
+            </div>
+
+            <div className="divide-y divide-gray-200 dark:divide-gray-800">
+              {contactCases.map((row) => (
+                <button
+                  key={row.caseId}
+                  type="button"
+                  onClick={() => goToCase(row.caseId)}
+                  className="grid w-full gap-2 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40 md:grid-cols-[2fr_1fr] md:items-center"
+                >
+                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                    {row.caratula}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1">
+                    {row.roles.length > 0 ? (
+                      row.roles.map((r) => (
+                        <span
+                          key={`${row.caseId}-${r}`}
+                          className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                        >
+                          {roleLabel(r)}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs text-gray-600 dark:text-gray-300">-</span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </Modal>
     </AppShell>
   );
 }
