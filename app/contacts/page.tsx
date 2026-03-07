@@ -15,6 +15,8 @@ import {
   limit,
   where,
 } from "firebase/firestore";
+import ExcelJS from "exceljs";
+import { MessageCircle } from "lucide-react";
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
@@ -192,6 +194,134 @@ function compareContactsAsc(a: ContactRow, b: ContactRow) {
   return safeLower(getDisplayName(a)).localeCompare(safeLower(getDisplayName(b)), "es");
 }
 
+function normalizePhoneForWhatsApp(phone?: string) {
+  const raw = String(phone ?? "").trim();
+  if (!raw) return "";
+
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("0")) digits = digits.slice(1);
+
+  return digits;
+}
+
+function buildWhatsAppLink(phone?: string) {
+  const normalized = normalizePhoneForWhatsApp(phone);
+  if (!normalized) return null;
+  return `https://wa.me/${normalized}`;
+}
+
+function exportContactToVCard(contact: ContactRow) {
+  const personType = normalizePersonType(contact.personType);
+
+  const name = safeText(contact.name);
+  const lastName = safeText(contact.lastName);
+  const fullName = personType === "juridica" ? name : `${name} ${lastName}`.trim();
+
+  const phone = safeText(contact.phone);
+  const email = safeText(contact.email);
+  const address = safeText(contact.address);
+  const notes = safeText(contact.notes);
+  const company = personType === "juridica" ? name : "";
+
+  const esc = (s: string) =>
+    s.replace(/\n/g, "\\n").replace(/;/g, "\\;").replace(/,/g, "\\,");
+
+  const lines = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    `FN:${esc(fullName)}`,
+    `N:${esc(lastName)};${esc(name)};;;`,
+    `ORG:${esc(company)}`,
+    phone ? `TEL;TYPE=CELL:${esc(phone)}` : "",
+    email ? `EMAIL:${esc(email)}` : "",
+    address ? `ADR:;;${esc(address)};;;;` : "",
+    notes ? `NOTE:${esc(notes)}` : "",
+    "END:VCARD",
+  ].filter(Boolean);
+
+  const vcard = lines.join("\n");
+
+  const blob = new Blob([vcard], { type: "text/vcard;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${fullName || "contacto"}.vcf`;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
+async function exportContactsToExcel(contacts: ContactRow[]) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Contactos");
+
+  sheet.columns = [
+    { header: "Tipo contacto", key: "type", width: 20 },
+    { header: "Tipo persona", key: "personType", width: 18 },
+    { header: "Nombre", key: "name", width: 20 },
+    { header: "Apellido", key: "lastName", width: 20 },
+    { header: "Nombre visible", key: "displayName", width: 30 },
+    { header: "Teléfono", key: "phone", width: 20 },
+    { header: "Email", key: "email", width: 30 },
+    { header: "Domicilio", key: "address", width: 35 },
+    { header: "Nacionalidad", key: "nationality", width: 18 },
+    { header: "DNI", key: "dni", width: 15 },
+    { header: "CUIT", key: "cuit", width: 18 },
+    { header: "Fecha nacimiento", key: "birthDate", width: 18 },
+    { header: "Estado civil", key: "civilStatus", width: 18 },
+    { header: "Nupcias", key: "marriageCount", width: 15 },
+    { header: "Cónyuge", key: "spouseName", width: 25 },
+    { header: "Referido por", key: "referredBy", width: 25 },
+    { header: "Matrícula", key: "tuition", width: 20 },
+    { header: "Área conciliación", key: "conciliationArea", width: 25 },
+    { header: "Área especialidad", key: "specialtyArea", width: 25 },
+    { header: "Notas", key: "notes", width: 40 },
+  ];
+
+  contacts.forEach((c) => {
+    sheet.addRow({
+      type: labelType(c.type),
+      personType: labelPersonType(c.personType),
+      name: c.name ?? "",
+      lastName: c.lastName ?? "",
+      displayName: getDisplayName(c),
+      phone: c.phone ?? "",
+      email: c.email ?? "",
+      address: c.address ?? "",
+      nationality: c.nationality ?? "",
+      dni: c.dni ?? "",
+      cuit: c.cuit ?? "",
+      birthDate: c.birthDate ?? "",
+      civilStatus: c.civilStatus ?? "",
+      marriageCount: c.marriageCount ?? "",
+      spouseName: c.spouseName ?? "",
+      referredBy: c.referredBy ?? "",
+      tuition: c.tuition ?? "",
+      conciliationArea: c.conciliationArea ?? "",
+      specialtyArea: c.specialtyArea ?? "",
+      notes: c.notes ?? "",
+    });
+  });
+
+  const header = sheet.getRow(1);
+  header.font = { bold: true };
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer]);
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "agenda_contactos.xlsx";
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
 function Field({
   label,
   value,
@@ -358,6 +488,16 @@ function ContactDetailsContent({ contact }: { contact: ContactRow }) {
         label={type === "cliente" || type === "demandado" ? "Otros datos" : "Otros"}
         value={contact.notes}
       />
+
+      <div className="flex justify-end pt-2">
+        <button
+          type="button"
+          onClick={() => exportContactToVCard(contact)}
+          className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+        >
+          Exportar a Google Contacts
+        </button>
+      </div>
     </div>
   );
 }
@@ -589,12 +729,24 @@ export default function ContactsListPage() {
           </div>
         </div>
 
-        <Link
-          href="/contacts/new"
-          className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
-        >
-          Nuevo contacto
-        </Link>
+        <div className="flex gap-2">
+          {role === "admin" ? (
+            <button
+              type="button"
+              onClick={() => exportContactsToExcel(allRows)}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
+            >
+              Exportar agenda Excel
+            </button>
+          ) : null}
+
+          <Link
+            href="/contacts/new"
+            className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+          >
+            Nuevo contacto
+          </Link>
+        </div>
       </div>
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -624,29 +776,92 @@ export default function ContactsListPage() {
             </div>
 
             <div className="divide-y divide-gray-200 dark:divide-gray-800">
-              {paginatedRows.map((c) => (
-                <div
-                  key={c.id}
-                  className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1fr_1.4fr_auto] md:items-center"
-                >
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                        {getDisplayName(c)}
+              {paginatedRows.map((c) => {
+                const whatsappLink = buildWhatsAppLink(c.phone);
+
+                return (
+                  <div
+                    key={c.id}
+                    className="grid gap-3 px-4 py-3 md:grid-cols-[2.2fr_1fr_1.4fr_auto] md:items-center"
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {getDisplayName(c)}
+                        </div>
+
+                        <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                          {labelType(c.type)}
+                        </span>
                       </div>
 
-                      <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
-                        {labelType(c.type)}
-                      </span>
+                      <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 md:hidden">
+                        {c.phone ? `Tel: ${c.phone}` : "Tel: -"}
+                        {" · "}
+                        {c.email ? c.email : "Email: -"}
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap gap-2 md:hidden">
+                        {whatsappLink ? (
+                          <a
+                            href={whatsappLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-green-200 bg-white text-green-600 hover:bg-green-50 dark:border-green-900 dark:bg-gray-800 dark:text-green-400 dark:hover:bg-gray-700"
+                            title={`Abrir WhatsApp de ${getDisplayName(c)}`}
+                            aria-label={`Abrir WhatsApp de ${getDisplayName(c)}`}
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                          </a>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => openDetailsModal(c)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                        >
+                          Ver completo
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openCasesModal(c)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                        >
+                          Ver causas
+                        </button>
+
+                        <Link
+                          href={`/contacts/${c.id}/edit`}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                        >
+                          Editar
+                        </Link>
+                      </div>
                     </div>
 
-                    <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 md:hidden">
-                      {c.phone ? `Tel: ${c.phone}` : "Tel: -"}
-                      {" · "}
-                      {c.email ? c.email : "Email: -"}
+                    <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
+                      {c.phone || "-"}
                     </div>
 
-                    <div className="mt-2 flex flex-wrap gap-2 md:hidden">
+                    <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
+                      {c.email || "-"}
+                    </div>
+
+                    <div className="hidden md:flex md:flex-wrap md:justify-end md:gap-2">
+                      {whatsappLink ? (
+                        <a
+                          href={whatsappLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-green-200 bg-white text-green-600 hover:bg-green-50 dark:border-green-900 dark:bg-gray-800 dark:text-green-400 dark:hover:bg-gray-700"
+                          title={`Abrir WhatsApp de ${getDisplayName(c)}`}
+                          aria-label={`Abrir WhatsApp de ${getDisplayName(c)}`}
+                        >
+                          <MessageCircle className="h-4 w-4" />
+                        </a>
+                      ) : null}
+
                       <button
                         type="button"
                         onClick={() => openDetailsModal(c)}
@@ -671,41 +886,8 @@ export default function ContactsListPage() {
                       </Link>
                     </div>
                   </div>
-
-                  <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
-                    {c.phone || "-"}
-                  </div>
-
-                  <div className="hidden text-sm font-semibold text-gray-700 dark:text-gray-200 md:block">
-                    {c.email || "-"}
-                  </div>
-
-                  <div className="hidden md:flex md:flex-wrap md:justify-end md:gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openDetailsModal(c)}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Ver completo
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => openCasesModal(c)}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Ver causas
-                    </button>
-
-                    <Link
-                      href={`/contacts/${c.id}/edit`}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-900 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Editar
-                    </Link>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
