@@ -113,19 +113,6 @@ export async function ensureManagementInitialized(params: {
         lastLogTitle: "Inicio de bitácora",
       } satisfies ManagementMeta);
 
-      await updateDoc(managementMetaRef(caseId), {
-  updatedAt: serverTimestamp(),
-  lastLogAt: serverTimestamp(),
-  lastLogByUid: user.uid,
-  lastLogTitle: title,
-});
-
-await updateDoc(doc(db, "cases", caseId), {
-  dashboardLastLogAt: serverTimestamp(),
-  dashboardLastLogTitle: title,
-  dashboardLastLogByEmail: user.email ?? "",
-});
-
       const logR = doc(logsColRef(caseId));
       tx.set(logR, {
         type: "informativa",
@@ -163,17 +150,11 @@ export async function addAutoLog(params: {
   });
 
   await updateDoc(managementMetaRef(caseId), {
-  updatedAt: serverTimestamp(),
-  lastLogAt: serverTimestamp(),
-  lastLogByUid: uid,
-  lastLogTitle: title,
-});
-
-await updateDoc(doc(db, "cases", caseId), {
-  dashboardLastLogAt: serverTimestamp(),
-  dashboardLastLogTitle: title,
-  dashboardLastLogByEmail: email ?? "",
-});
+    updatedAt: serverTimestamp(),
+    lastLogAt: serverTimestamp(),
+    lastLogByUid: uid,
+    lastLogTitle: title,
+  });
 
   return logRef.id;
 }
