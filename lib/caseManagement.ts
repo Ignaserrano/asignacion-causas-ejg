@@ -138,6 +138,24 @@ export async function addAutoLog(params: {
 }) {
   const { caseId, uid, email, title, body, type } = params;
 
+  const metaRef = managementMetaRef(caseId);
+  const metaSnap = await getDoc(metaRef);
+
+  if (!metaSnap.exists()) {
+    await setDoc(
+      metaRef,
+      {
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        status: "preliminar",
+        lastLogAt: serverTimestamp(),
+        lastLogByUid: uid,
+        lastLogTitle: title,
+      } satisfies ManagementMeta,
+      { merge: true }
+    );
+  }
+
   const logRef = await addDoc(logsColRef(caseId), {
     type: type ?? "informativa",
     title,
@@ -149,12 +167,16 @@ export async function addAutoLog(params: {
     attachments: [],
   });
 
-  await updateDoc(managementMetaRef(caseId), {
-    updatedAt: serverTimestamp(),
-    lastLogAt: serverTimestamp(),
-    lastLogByUid: uid,
-    lastLogTitle: title,
-  });
+  await setDoc(
+    metaRef,
+    {
+      updatedAt: serverTimestamp(),
+      lastLogAt: serverTimestamp(),
+      lastLogByUid: uid,
+      lastLogTitle: title,
+    },
+    { merge: true }
+  );
 
   return logRef.id;
 }

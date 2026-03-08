@@ -232,7 +232,31 @@ export default function AppShell({
       badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
     },
     { href: "/specialties", label: "Especialidades", icon: <IconSpecialties />, iconOnly: true },
+ 
+ {
+  href: "/cobranzas",
+  label: "Cobros",
+  icon: (
+    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 7h16v10H4z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="M8 11h8"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  ),
+  iconOnly: true,
+},
+ 
   ];
+
+
+
 
   const textTabs: Tab[] = [{ href: "/dashboard", label: "Inicio", icon: <IconHome /> }];
 
@@ -335,9 +359,7 @@ export default function AppShell({
             {children}
           </div>
 
-          <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
-            Tip: guardá <span className="font-bold">/dashboard</span> como favorito.
-          </div>
+
         </main>
       </div>
     </div>

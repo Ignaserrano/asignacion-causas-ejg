@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -24,6 +24,7 @@ import {
   IconNewCase,
   IconSpecialties,
 } from "@/components/DashboardIcons";
+import { getChargeUserNetAmount } from "@/lib/charges";
 
 function IconManage({ className }: { className?: string }) {
   return (
@@ -74,6 +75,21 @@ function IconContacts({ className }: { className?: string }) {
         strokeWidth="2"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function IconMoney({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-5 w-5"}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="2" />
+      <circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="2" />
+      <path d="M7 12h.01M17 12h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -169,6 +185,17 @@ type ArchiveRequestItem = {
   requestedByEmail?: string;
 };
 
+type TransferPendingItem = {
+  chargeId: string;
+  payerName: string;
+  caseLabel: string;
+  paidAtSec?: number;
+  myNetAmount?: number;
+  currency?: string;
+  ownerUid?: string;
+  isOwner: boolean;
+};
+
 type CaseRow = {
   id: string;
   caratulaTentativa?: string;
@@ -180,6 +207,10 @@ type CaseRow = {
 function fmtDateTime(sec?: number) {
   if (!sec) return "-";
   return new Date(sec * 1000).toLocaleString();
+}
+
+function fmtMoney(n?: number, currency?: string) {
+  return `${Number(n ?? 0).toLocaleString()} ${currency ?? ""}`.trim();
 }
 
 export default function DashboardPage() {
@@ -198,6 +229,9 @@ export default function DashboardPage() {
 
   const [archiveRequests, setArchiveRequests] = useState<ArchiveRequestItem[]>([]);
   const [loadingArchiveRequests, setLoadingArchiveRequests] = useState(false);
+
+  const [pendingTransfers, setPendingTransfers] = useState<TransferPendingItem[]>([]);
+  const [loadingTransfers, setLoadingTransfers] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -331,6 +365,58 @@ export default function DashboardPage() {
     })();
   }, [user, role]);
 
+  useEffect(() => {
+    (async () => {
+      if (!user) {
+        setPendingTransfers([]);
+        return;
+      }
+
+      setLoadingTransfers(true);
+
+      try {
+        const qTransfers = query(
+          collection(db, "charges"),
+          where("visibleToUids", "array-contains", user.uid),
+          where("status", "==", "paid"),
+          where("transferTicket.status", "==", "pending"),
+          limit(50)
+        );
+
+        const snap = await getDocs(qTransfers);
+        const items = snap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            const myNetAmount = getChargeUserNetAmount(data, user.uid);
+            const ownerUid = String(data?.ownerUid ?? "");
+            const isOwner = ownerUid === user.uid;
+
+            return {
+              chargeId: d.id,
+              payerName: String(data?.payerRef?.displayName ?? "").trim() || "(sin pagador)",
+              caseLabel: data?.caseRef?.isExtraCase
+                ? String(data?.caseRef?.extraCaseReason ?? "").trim() || "Cobro extra-caso"
+                : String(data?.caseRef?.caratula ?? "").trim() || "(sin carátula)",
+              paidAtSec: Number(data?.paidAt?.seconds ?? 0) || undefined,
+              myNetAmount,
+              currency: String(data?.currency ?? "").trim() || undefined,
+              ownerUid,
+              isOwner,
+            } as TransferPendingItem;
+          })
+          .filter((x) => x.isOwner || Number(x.myNetAmount ?? 0) > 0);
+
+        items.sort((a, b) => (b.paidAtSec ?? 0) - (a.paidAtSec ?? 0));
+        setPendingTransfers(items);
+      } catch (e: any) {
+        setPendingTransfers([]);
+        setMsg((prev) => prev ?? (e?.message ?? "Error cargando transferencias pendientes"));
+      } finally {
+        setLoadingTransfers(false);
+      }
+    })();
+  }, [user]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
@@ -379,6 +465,13 @@ export default function DashboardPage() {
           title="Agenda de contactos"
           subtitle="Personas, empresas, CUIT/DNI, email y teléfono"
           icon={<IconContacts className="h-5 w-5" />}
+        />
+
+        <CardLink
+          href="/cobranzas"
+          title="Mis cobros"
+          subtitle="Cobros realizados, previstos y transferencias"
+          icon={<IconMoney className="h-5 w-5" />}
         />
 
         <CardLink
@@ -470,6 +563,48 @@ export default function DashboardPage() {
               ))
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Transferencias pendientes
+          </div>
+          {loadingTransfers ? (
+            <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
+          ) : (
+            <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+              {pendingTransfers.length} pendiente(s)
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+          {!loadingTransfers && pendingTransfers.length === 0 ? (
+            <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+              No tenés transferencias pendientes.
+            </div>
+          ) : (
+            pendingTransfers.map((item) => (
+              <a
+                key={item.chargeId}
+                href={`/cobranzas/registrar?ticket=${item.chargeId}`}
+                className="block py-2 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+              >
+                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                  {item.caseLabel}
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-300">
+                  {item.payerName} · {item.paidAtSec ? fmtDateTime(item.paidAtSec) : "-"}
+                </div>
+                <div className="mt-1 text-xs font-bold text-gray-700 dark:text-gray-200">
+                  {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} · Mi neto:{" "}
+                  {fmtMoney(item.myNetAmount, item.currency)}
+                </div>
+              </a>
+            ))
+          )}
         </div>
       </div>
 

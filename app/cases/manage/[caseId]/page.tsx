@@ -823,17 +823,17 @@ export default function ManageCasePage() {
       });
 
       await updateDoc(managementMetaRef(caseId), {
-  updatedAt: serverTimestamp(),
-  lastLogAt: serverTimestamp(),
-  lastLogByUid: user.uid,
-  lastLogTitle: title,
-});
+        updatedAt: serverTimestamp(),
+        lastLogAt: serverTimestamp(),
+        lastLogByUid: user.uid,
+        lastLogTitle: title,
+      });
 
-await updateDoc(doc(db, "cases", caseId), {
-  dashboardLastLogAt: serverTimestamp(),
-  dashboardLastLogTitle: title,
-  dashboardLastLogByEmail: user.email ?? "",
-});
+      await updateDoc(doc(db, "cases", caseId), {
+        dashboardLastLogAt: serverTimestamp(),
+        dashboardLastLogTitle: title,
+        dashboardLastLogByEmail: user.email ?? "",
+      });
 
       setLogTitle("");
       setLogBody("");
@@ -985,7 +985,7 @@ await updateDoc(doc(db, "cases", caseId), {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {role === "admin" ? (
                 <button
                   type="button"
@@ -996,6 +996,20 @@ await updateDoc(doc(db, "cases", caseId), {
                   {caseDoc.status === "archived" ? "Archivada" : "Archivar"}
                 </button>
               ) : null}
+
+              <Link
+                href={`/cobranzas?caseId=${caseId}`}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Ver cobros
+              </Link>
+
+              <Link
+                href={`/cobranzas/registrar?caseId=${caseId}`}
+                className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+              >
+                Registrar cobro
+              </Link>
 
               <Link
                 href="/cases/manage"
