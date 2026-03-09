@@ -29,15 +29,17 @@ function Badge({
 
 type Tab = {
   href: string;
-  label: string; // para tooltip / accesibilidad
+  label: string;
   badge?: React.ReactNode;
-
-  // si icon existe, se renderiza como botón “solo ícono”
   icon?: React.ReactNode;
   iconOnly?: boolean;
 };
 
-// --- íconos inline (simples y consistentes) ---
+type BreadcrumbItem = {
+  label: string;
+  href?: string;
+};
+
 function IconHome({ className }: { className?: string }) {
   return (
     <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -91,12 +93,7 @@ function IconBriefcase({ className }: { className?: string }) {
         strokeWidth="2"
         strokeLinejoin="round"
       />
-      <path
-        d="M4 12h16"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
+      <path d="M4 12h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -143,12 +140,7 @@ function IconInvites({ className }: { className?: string }) {
         stroke="currentColor"
         strokeWidth="2"
       />
-      <path
-        d="m5 8 7 5 7-5"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
+      <path d="m5 8 7 5 7-5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -199,6 +191,42 @@ function TabLink({ t }: { t: Tab }) {
   );
 }
 
+function Breadcrumbs({ items }: { items?: BreadcrumbItem[] }) {
+  if (!items || items.length === 0) return null;
+
+  return (
+    <nav
+      aria-label="Breadcrumb"
+      className="mb-4 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm dark:border-gray-800 dark:bg-gray-900"
+    >
+      <div className="flex flex-wrap items-center gap-2 text-gray-600 dark:text-gray-300">
+        {items.map((item, idx) => {
+          const isLast = idx === items.length - 1;
+
+          return (
+            <div key={`${item.label}-${idx}`} className="inline-flex items-center gap-2">
+              {idx > 0 ? <span className="text-gray-400 dark:text-gray-500">›</span> : null}
+
+              {item.href && !isLast ? (
+                <Link
+                  href={item.href}
+                  className="font-semibold hover:text-gray-900 hover:underline dark:hover:text-gray-100"
+                >
+                  {item.label}
+                </Link>
+              ) : (
+                <span className={isLast ? "font-black text-gray-900 dark:text-gray-100" : "font-semibold"}>
+                  {item.label}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
 export default function AppShell({
   title,
   subtitle,
@@ -206,6 +234,7 @@ export default function AppShell({
   role,
   pendingInvites,
   onLogout,
+  breadcrumbs,
   children,
 }: {
   title: string;
@@ -214,6 +243,7 @@ export default function AppShell({
   role?: string;
   pendingInvites?: number;
   onLogout?: () => void;
+  breadcrumbs?: BreadcrumbItem[];
   children: React.ReactNode;
 }) {
   const isAdmin = role === "admin";
@@ -232,46 +262,25 @@ export default function AppShell({
       badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
     },
     { href: "/specialties", label: "Especialidades", icon: <IconSpecialties />, iconOnly: true },
- 
- {
-  href: "/cobranzas",
-  label: "Cobros",
-  icon: (
-    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M4 7h16v10H4z"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="M8 11h8"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-    </svg>
-  ),
-  iconOnly: true,
-},
- 
+    {
+      href: "/cobranzas",
+      label: "Cobros",
+      icon: (
+        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
+          <path d="M4 7h16v10H4z" stroke="currentColor" strokeWidth="2" />
+          <path d="M8 11h8" stroke="currentColor" strokeWidth="2" />
+        </svg>
+      ),
+      iconOnly: true,
+    },
   ];
 
-
-
-
   const textTabs: Tab[] = [{ href: "/dashboard", label: "Inicio", icon: <IconHome /> }];
-
-  const adminTabs: Tab[] = isAdmin
-    ? [
-        { href: "/admin/lawyers", label: "Admin abogados" },
-        { href: "/admin/specialties", label: "Admin especialidades" },
-      ]
-    : [];
 
   return (
     <div className="min-h-dvh bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
       <PushNotificationsClient />
 
-      {/* Top bar */}
       <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-[180px]">
@@ -300,7 +309,7 @@ export default function AppShell({
             {onLogout ? (
               <button
                 onClick={onLogout}
-                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:shadow hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:bg-gray-50 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
               >
                 Cerrar sesión
               </button>
@@ -309,57 +318,31 @@ export default function AppShell({
         </div>
       </header>
 
-      {/* Body */}
       <div className="mx-auto max-w-6xl px-4 py-6">
-        {/* Tabs */}
         <nav className="mb-4 flex gap-2 overflow-x-auto rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-          {/* Texto (solo Inicio) */}
           {textTabs.map((t) => (
             <TabLink
               key={t.href}
               t={{
                 ...t,
-                // aquí forzamos texto
                 iconOnly: false,
               }}
             />
           ))}
 
-          {/* separador */}
           <span className="mx-1 my-1 w-px shrink-0 bg-gray-200 dark:bg-gray-800" />
 
-          {/* Íconos */}
           {iconTabs.map((t) => (
             <TabLink key={t.href} t={t} />
           ))}
-
-          {/* Admin texto */}
-          {adminTabs.length > 0 ? (
-            <>
-              <span className="mx-1 my-1 w-px shrink-0 bg-gray-200 dark:bg-gray-800" />
-              {adminTabs.map((t) => (
-                <Link
-                  key={t.href}
-                  href={t.href}
-                  className="shrink-0 rounded-xl border border-gray-200 px-3 py-2 text-sm font-extrabold text-gray-700 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-800 dark:hover:text-white"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    {t.label}
-                    <Badge tone="admin">ADMIN</Badge>
-                  </span>
-                </Link>
-              ))}
-            </>
-          ) : null}
         </nav>
 
-        {/* Content */}
         <main className="min-w-0">
+          <Breadcrumbs items={breadcrumbs} />
+
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             {children}
           </div>
-
-
         </main>
       </div>
     </div>

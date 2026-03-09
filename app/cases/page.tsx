@@ -77,6 +77,25 @@ function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
 }
 
+async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
+  const all: QueryDocumentSnapshot<T>[] = [];
+  let cursor: QueryDocumentSnapshot<T> | null = null;
+
+  while (true) {
+    const qPage = cursor
+      ? query(qBase, startAfter(cursor), limit(500))
+      : query(qBase, limit(500));
+
+    const snap = await getDocs(qPage);
+    all.push(...snap.docs);
+
+    if (snap.size < 500) break;
+    cursor = snap.docs[snap.docs.length - 1] as QueryDocumentSnapshot<T>;
+  }
+
+  return all;
+}
+
 export default function CasesAllPage() {
   const router = useRouter();
 
@@ -96,7 +115,7 @@ export default function CasesAllPage() {
   const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>("");
   const [showArchived, setShowArchived] = useState(false);
 
-  // búsqueda por carátula (página actual)
+  // búsqueda por carátula (ahora global)
   const [searchCaratula, setSearchCaratula] = useState<string>("");
 
   // orden
@@ -109,7 +128,10 @@ export default function CasesAllPage() {
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [prevStack, setPrevStack] = useState<DocumentSnapshot[]>([]);
 
-  // total (con filtros)
+  // global search mode
+  const [globalRows, setGlobalRows] = useState<CaseRow[]>([]);
+
+  // total
   const [total, setTotal] = useState<number>(0);
 
   // lookups
@@ -132,6 +154,22 @@ export default function CasesAllPage() {
   const [deleteCaseTitle, setDeleteCaseTitle] = useState<string>("");
   const [deleting, setDeleting] = useState(false);
 
+  const globalSearchActive = Boolean(safeLower(searchCaratula));
+
+  function mapCaseDoc(d: QueryDocumentSnapshot<DocumentData, DocumentData> | DocumentSnapshot) {
+    const data = d.data() as any;
+    return {
+      id: d.id,
+      caratulaTentativa: String(data?.caratulaTentativa ?? ""),
+      specialtyId: String(data?.specialtyId ?? ""),
+      jurisdiccion: String(data?.jurisdiccion ?? ""),
+      status: (data?.status ?? "draft") as CaseStatus,
+      createdAtSec: Number(data?.createdAt?.seconds ?? 0),
+      broughtByUid: String(data?.broughtByUid ?? ""),
+      archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
+    } as CaseRow;
+  }
+
   function buildCasesQuery(base?: Query, cursor?: DocumentSnapshot | null) {
     let qAny: any = base ?? collection(db, "cases");
 
@@ -153,17 +191,8 @@ export default function CasesAllPage() {
     return qAny as Query;
   }
 
-  async function resolveCreatorUidByEmailExact(email: string): Promise<string | null> {
-    const e = safeLower(email);
-    if (!e) return null;
-    const qUsers = query(collection(db, "users"), where("email", "==", e), limit(1));
-    const snap = await getDocs(qUsers);
-    if (snap.empty) return "__none__";
-    return snap.docs[0].id;
-  }
-
-  async function refreshTotalCount() {
-    let qAny: any = collection(db, "cases");
+  function buildCasesQueryNoLimit(base?: Query) {
+    let qAny: any = base ?? collection(db, "cases");
 
     if (!showArchived) {
       qAny = query(qAny, where("status", "!=", "archived"));
@@ -175,25 +204,18 @@ export default function CasesAllPage() {
       qAny = query(qAny, where("specialtyId", "==", filterSpecialtyId));
     if (creatorUidFilter) qAny = query(qAny, where("broughtByUid", "==", creatorUidFilter));
 
-    qAny = query(qAny, orderBy("createdAt", "desc"));
+    qAny = query(qAny, orderBy(orderField, orderDir));
 
-    let count = 0;
-    let cursor: QueryDocumentSnapshot<DocumentData, DocumentData> | null = null;
+    return qAny as Query;
+  }
 
-    for (let i = 0; i < 500; i++) {
-      let qPage: any = qAny;
-      if (cursor) qPage = query(qPage, startAfter(cursor));
-      qPage = query(qPage, limit(500));
-      const snap = await getDocs(qPage);
-      count += snap.size;
-      if (snap.size < 500) break;
-      cursor = snap.docs[snap.docs.length - 1] as unknown as QueryDocumentSnapshot<
-        DocumentData,
-        DocumentData
-      >;
-    }
-
-    setTotal(count);
+  async function resolveCreatorUidByEmailExact(email: string): Promise<string | null> {
+    const e = safeLower(email);
+    if (!e) return null;
+    const qUsers = query(collection(db, "users"), where("email", "==", e), limit(1));
+    const snap = await getDocs(qUsers);
+    if (snap.empty) return "__none__";
+    return snap.docs[0].id;
   }
 
   async function uidToEmail(uid: string): Promise<string> {
@@ -209,6 +231,47 @@ export default function CasesAllPage() {
     } catch {
       setEmailByUid((m) => ({ ...m, [uid]: "" }));
       return "";
+    }
+  }
+
+  async function ensureLookupsForRows(rows: CaseRow[]) {
+    const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
+    const missingUids = uids.filter((u) => emailByUid[u] === undefined);
+
+    if (missingUids.length) {
+      const newMap = { ...emailByUid };
+      await Promise.all(
+        missingUids.map(async (uid) => {
+          try {
+            const uSnap = await getDoc(doc(db, "users", uid));
+            const email = uSnap.exists() ? String((uSnap.data() as any)?.email ?? "") : "";
+            newMap[uid] = email || "";
+          } catch {
+            newMap[uid] = "";
+          }
+        })
+      );
+      setEmailByUid(newMap);
+    }
+
+    const spIds = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
+    const missingSp = spIds.filter((id) => !specialtyNameById[id]);
+
+    if (missingSp.length) {
+      const spMap = { ...specialtyNameById };
+      await Promise.all(
+        missingSp.map(async (id) => {
+          try {
+            const spSnap = await getDoc(doc(db, "specialties", id));
+            spMap[id] = spSnap.exists()
+              ? String((spSnap.data() as any)?.name ?? "(sin nombre)")
+              : "(no encontrada)";
+          } catch {
+            spMap[id] = "(error)";
+          }
+        })
+      );
+      setSpecialtyNameById(spMap);
     }
   }
 
@@ -251,7 +314,7 @@ export default function CasesAllPage() {
     });
   }
 
-  async function loadPage(resetToFirst: boolean) {
+  async function loadNormalPage(resetToFirst: boolean) {
     setLoading(true);
     setMsg(null);
 
@@ -259,63 +322,45 @@ export default function CasesAllPage() {
       const qCases = buildCasesQuery(undefined, resetToFirst ? null : lastDoc);
       const snap = await getDocs(qCases);
 
-      const rows: CaseRow[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          caratulaTentativa: String(data?.caratulaTentativa ?? ""),
-          specialtyId: String(data?.specialtyId ?? ""),
-          jurisdiccion: String(data?.jurisdiccion ?? ""),
-          status: (data?.status ?? "draft") as CaseStatus,
-          createdAtSec: Number(data?.createdAt?.seconds ?? 0),
-          broughtByUid: String(data?.broughtByUid ?? ""),
-          archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
-        };
-      });
+      const rows: CaseRow[] = snap.docs.map((d) => mapCaseDoc(d));
 
       setPageRows(rows);
+      setGlobalRows([]);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
+      setTotal(0);
 
+      await ensureLookupsForRows(rows);
       await loadAcceptedForCases(rows.map((r) => r.id));
-
-      const uids = Array.from(new Set(rows.map((r) => r.broughtByUid).filter(Boolean)));
-      const missingUids = uids.filter((u) => !emailByUid[u]);
-      if (missingUids.length) {
-        const newMap = { ...emailByUid };
-        await Promise.all(
-          missingUids.map(async (uid) => {
-            try {
-              const uSnap = await getDoc(doc(db, "users", uid));
-              const email = uSnap.exists() ? String((uSnap.data() as any)?.email ?? "") : "";
-              newMap[uid] = email || "";
-            } catch {
-              newMap[uid] = "";
-            }
-          })
-        );
-        setEmailByUid(newMap);
-      }
-
-      const spIds = Array.from(new Set(rows.map((r) => r.specialtyId).filter(Boolean)));
-      const missingSp = spIds.filter((id) => !specialtyNameById[id]);
-      if (missingSp.length) {
-        const spMap = { ...specialtyNameById };
-        await Promise.all(
-          missingSp.map(async (id) => {
-            try {
-              const spSnap = await getDoc(doc(db, "specialties", id));
-              spMap[id] = spSnap.exists()
-                ? String((spSnap.data() as any)?.name ?? "(sin nombre)")
-                : "(no encontrada)";
-            } catch {
-              spMap[id] = "(error)";
-            }
-          })
-        );
-        setSpecialtyNameById(spMap);
-      }
     } catch (e: any) {
       setMsg(e?.message ?? "Error cargando causas");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadGlobalSearchResults() {
+    setLoading(true);
+    setMsg(null);
+
+    try {
+      const qCases = buildCasesQueryNoLimit();
+      const docs = await getAllDocs(qCases);
+      const allRows = docs.map((d) => mapCaseDoc(d));
+
+      const s = safeLower(searchCaratula);
+      const filtered = allRows.filter((r) => safeLower(r.caratulaTentativa).includes(s));
+
+      setGlobalRows(filtered);
+      setPageRows([]);
+      setPrevStack([]);
+      setLastDoc(null);
+      setTotal(filtered.length);
+
+      const firstPageRows = filtered.slice(0, PAGE_SIZE);
+      await ensureLookupsForRows(firstPageRows);
+      await loadAcceptedForCases(firstPageRows.map((r) => r.id));
+    } catch (e: any) {
+      setMsg(e?.message ?? "Error cargando búsqueda global");
     } finally {
       setLoading(false);
     }
@@ -380,9 +425,12 @@ export default function CasesAllPage() {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
-      setSearchCaratula("");
-      await loadPage(true);
-      await refreshTotalCount();
+
+      if (safeLower(searchCaratula)) {
+        await loadGlobalSearchResults();
+      } else {
+        await loadNormalPage(true);
+      }
     });
 
     return () => unsub();
@@ -417,27 +465,76 @@ export default function CasesAllPage() {
       setPage(1);
       setPrevStack([]);
       setLastDoc(null);
-      setSearchCaratula("");
-      await loadPage(true);
-      await refreshTotalCount();
+
+      if (safeLower(searchCaratula)) {
+        await loadGlobalSearchResults();
+      } else {
+        await loadNormalPage(true);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterStatus, filterJur, filterSpecialtyId, creatorUidFilter, orderField, orderDir, showArchived]);
+  }, [
+    filterStatus,
+    filterJur,
+    filterSpecialtyId,
+    creatorUidFilter,
+    orderField,
+    orderDir,
+    showArchived,
+  ]);
 
-  const pageRowsFilteredByCaratula = useMemo(() => {
-    const s = safeLower(searchCaratula);
-    if (!s) return pageRows;
-    return pageRows.filter((r) => safeLower(r.caratulaTentativa).includes(s));
-  }, [pageRows, searchCaratula]);
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      setPage(1);
+      setPrevStack([]);
+      setLastDoc(null);
+
+      if (safeLower(searchCaratula)) {
+        await loadGlobalSearchResults();
+      } else {
+        await loadNormalPage(true);
+      }
+    }, 250);
+
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchCaratula]);
+
+  const visibleRows = useMemo(() => {
+    if (!globalSearchActive) return pageRows;
+    const start = (page - 1) * PAGE_SIZE;
+    return globalRows.slice(start, start + PAGE_SIZE);
+  }, [globalSearchActive, globalRows, page, pageRows]);
+
+  useEffect(() => {
+    (async () => {
+      if (!visibleRows.length) return;
+      await ensureLookupsForRows(visibleRows);
+      await loadAcceptedForCases(visibleRows.map((r) => r.id));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleRows]);
 
   const showingText = useMemo(() => {
-    const shown = pageRowsFilteredByCaratula.length;
+    const shown = visibleRows.length;
+
+    if (globalSearchActive) {
+      const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+      const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + shown;
+      return { shown, start, end };
+    }
+
     const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
     const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + Math.min(PAGE_SIZE, pageRows.length);
     return { shown, start, end };
-  }, [pageRowsFilteredByCaratula.length, pageRows.length, page, total]);
+  }, [globalSearchActive, page, pageRows.length, total, visibleRows.length]);
 
-  const canNext = useMemo(() => pageRows.length === PAGE_SIZE, [pageRows.length]);
+  const canNext = useMemo(() => {
+    if (globalSearchActive) {
+      return page * PAGE_SIZE < total;
+    }
+    return pageRows.length === PAGE_SIZE;
+  }, [globalSearchActive, page, pageRows.length, total]);
 
   const creatorEmailShown = (uid: string) => {
     if (!uid) return "-";
@@ -446,15 +543,26 @@ export default function CasesAllPage() {
   };
 
   async function nextPage() {
-    if (!canNext || !lastDoc) return;
+    if (!canNext) return;
+
+    if (globalSearchActive) {
+      setPage((p) => p + 1);
+      return;
+    }
+
+    if (!lastDoc) return;
     setPrevStack((s) => [...s, lastDoc]);
     setPage((p) => p + 1);
-    setSearchCaratula("");
-    await loadPage(false);
+    await loadNormalPage(false);
   }
 
   async function prevPage() {
     if (page <= 1) return;
+
+    if (globalSearchActive) {
+      setPage((p) => Math.max(1, p - 1));
+      return;
+    }
 
     const newStack = [...prevStack];
     newStack.pop();
@@ -466,29 +574,17 @@ export default function CasesAllPage() {
 
     setLoading(true);
     setMsg(null);
-    setSearchCaratula("");
 
     try {
       const qCases = buildCasesQuery(undefined, prevCursor);
       const snap = await getDocs(qCases);
 
-      const rows: CaseRow[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          caratulaTentativa: String(data?.caratulaTentativa ?? ""),
-          specialtyId: String(data?.specialtyId ?? ""),
-          jurisdiccion: String(data?.jurisdiccion ?? ""),
-          status: (data?.status ?? "draft") as CaseStatus,
-          createdAtSec: Number(data?.createdAt?.seconds ?? 0),
-          broughtByUid: String(data?.broughtByUid ?? ""),
-          archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
-        };
-      });
+      const rows: CaseRow[] = snap.docs.map((d) => mapCaseDoc(d));
 
       setPageRows(rows);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
+      await ensureLookupsForRows(rows);
       await loadAcceptedForCases(rows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error");
@@ -523,7 +619,7 @@ export default function CasesAllPage() {
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{showingText.shown}</span>{" "}
           <span className="text-gray-500 dark:text-gray-400">
-            (en esta página{searchCaratula ? " · filtrado por carátula" : ""})
+            {globalSearchActive ? "(búsqueda global por carátula)" : "(sin búsqueda global)"}
           </span>{" "}
           · Total <span className="font-bold">{total}</span>
           {total > 0 ? (
@@ -595,12 +691,12 @@ export default function CasesAllPage() {
             </label>
 
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
-              Buscar carátula (página){" "}
+              Buscar carátula{" "}
               <input
                 value={searchCaratula}
                 onChange={(e) => setSearchCaratula(e.target.value)}
-                placeholder="Buscar por carátula…"
-                className="ml-2 min-w-[240px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+                placeholder="Buscar por carátula en todas las causas…"
+                className="ml-2 min-w-[280px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
               />
             </label>
           </div>
@@ -664,12 +760,12 @@ export default function CasesAllPage() {
 
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
-          {pageRowsFilteredByCaratula.length === 0 ? (
+          {visibleRows.length === 0 ? (
             <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
-              No hay causas con esos filtros{searchCaratula ? " (y búsqueda de carátula)." : "."}
+              No hay causas con esos filtros{searchCaratula ? " y esa carátula." : "."}
             </div>
           ) : (
-            pageRowsFilteredByCaratula.map((r) => (
+            visibleRows.map((r) => (
               <div
                 key={r.id}
                 className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
@@ -788,8 +884,9 @@ export default function CasesAllPage() {
       </div>
 
       <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
-        Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span> (por
-        ahora). · La búsqueda por carátula filtra <span className="font-bold">solo la página actual</span>.
+        Nota: el filtro “Creador” funciona por <span className="font-bold">email exacto</span>. · La
+        búsqueda por carátula ahora es <span className="font-bold">global</span>, no solo de la página
+        actual.
       </div>
 
       {deleteCaseId ? (
@@ -838,13 +935,20 @@ export default function CasesAllPage() {
                     setDeleteCaseTitle("");
 
                     setPageRows((prev) => prev.filter((r) => r.id !== removedId));
+                    setGlobalRows((prev) => prev.filter((r) => r.id !== removedId));
                     setAcceptedByCaseId((prev) => {
                       const next = { ...prev };
                       delete next[removedId];
                       return next;
                     });
 
-                    await refreshTotalCount();
+                    if (globalSearchActive) {
+                      const nextTotal = Math.max(0, total - 1);
+                      setTotal(nextTotal);
+
+                      const maxPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
+                      if (page > maxPage) setPage(maxPage);
+                    }
                   } catch (e: any) {
                     setMsg(e?.message ?? "Error eliminando causa");
                   } finally {

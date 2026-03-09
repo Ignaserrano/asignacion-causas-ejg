@@ -204,6 +204,22 @@ type CaseRow = {
   dashboardLastLogByEmail?: string;
 };
 
+type SentInviteStatus = "pending" | "accepted" | "rejected";
+type SentInviteMode = "auto" | "direct";
+
+type SentInviteItem = {
+  inviteId: string;
+  caseId: string;
+  caratula: string;
+  invitedEmail?: string;
+  status: SentInviteStatus;
+  mode: SentInviteMode;
+  directJustification?: string;
+  invitedAtSec: number;
+  respondedAtSec: number;
+  sortSec: number;
+};
+
 function fmtDateTime(sec?: number) {
   if (!sec) return "-";
   return new Date(sec * 1000).toLocaleString();
@@ -211,6 +227,11 @@ function fmtDateTime(sec?: number) {
 
 function fmtMoney(n?: number, currency?: string) {
   return `${Number(n ?? 0).toLocaleString()} ${currency ?? ""}`.trim();
+}
+
+function toSecondsMaybe(ts: any): number {
+  const s = ts?.seconds;
+  return typeof s === "number" ? s : 0;
 }
 
 export default function DashboardPage() {
@@ -232,6 +253,9 @@ export default function DashboardPage() {
 
   const [pendingTransfers, setPendingTransfers] = useState<TransferPendingItem[]>([]);
   const [loadingTransfers, setLoadingTransfers] = useState(false);
+
+  const [sentInvites, setSentInvites] = useState<SentInviteItem[]>([]);
+  const [loadingSentInvites, setLoadingSentInvites] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -417,6 +441,64 @@ export default function DashboardPage() {
     })();
   }, [user]);
 
+  useEffect(() => {
+    (async () => {
+      if (!user) {
+        setSentInvites([]);
+        return;
+      }
+
+      setLoadingSentInvites(true);
+
+      try {
+        const qMyCases = query(collection(db, "cases"), where("broughtByUid", "==", user.uid));
+        const casesSnap = await getDocs(qMyCases);
+
+        const items: SentInviteItem[] = [];
+
+        for (const caseDoc of casesSnap.docs) {
+          const caseId = caseDoc.id;
+          const caseData = caseDoc.data() as any;
+          const caratula = String(caseData?.caratulaTentativa ?? caseId);
+
+          const invitesSnap = await getDocs(collection(db, "cases", caseId, "invites"));
+
+          invitesSnap.docs.forEach((d) => {
+            const data = d.data() as any;
+
+            const invitedAtSec = toSecondsMaybe(data?.invitedAt);
+            const respondedAtSec = toSecondsMaybe(data?.respondedAt);
+            const status = String(data?.status ?? "pending") as SentInviteStatus;
+            const mode = String(data?.mode ?? "auto") as SentInviteMode;
+
+            if (status !== "pending" && status !== "accepted" && status !== "rejected") return;
+
+            items.push({
+              inviteId: d.id,
+              caseId,
+              caratula,
+              invitedEmail: String(data?.invitedEmail ?? "").trim() || "",
+              status,
+              mode,
+              directJustification: String(data?.directJustification ?? "").trim() || "",
+              invitedAtSec,
+              respondedAtSec,
+              sortSec: respondedAtSec || invitedAtSec || 0,
+            });
+          });
+        }
+
+        items.sort((a, b) => b.sortSec - a.sortSec);
+        setSentInvites(items.slice(0, 20));
+      } catch (e: any) {
+        setSentInvites([]);
+        setMsg((prev) => prev ?? (e?.message ?? "Error cargando estado de invitaciones enviadas"));
+      } finally {
+        setLoadingSentInvites(false);
+      }
+    })();
+  }, [user]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
@@ -563,6 +645,85 @@ export default function DashboardPage() {
               ))
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Estado de invitaciones enviadas
+          </div>
+          {loadingSentInvites ? (
+            <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
+          ) : (
+            <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+              {sentInvites.length} visible(s)
+            </div>
+          )}
+        </div>
+
+        <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+          Se muestran las últimas invitaciones enviadas en causas creadas por vos.
+        </div>
+
+        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+          {!loadingSentInvites && sentInvites.length === 0 ? (
+            <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+              No hay invitaciones enviadas para mostrar.
+            </div>
+          ) : (
+            sentInvites.map((item) => (
+              <a
+                key={`${item.caseId}-${item.inviteId}`}
+                href={`/cases/${item.caseId}`}
+                className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                    {item.caratula || item.caseId}
+                  </div>
+
+                  {item.mode === "direct" ? (
+                    <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[11px] font-black text-orange-800 dark:border-orange-700 dark:bg-orange-900/30 dark:text-orange-200">
+                      DIRECTA
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                      AUTOMÁTICA
+                    </span>
+                  )}
+
+                  {item.status === "pending" ? (
+                    <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[11px] font-black text-orange-800 dark:border-orange-700 dark:bg-orange-900/30 dark:text-orange-200">
+                      PENDIENTE
+                    </span>
+                  ) : item.status === "accepted" ? (
+                    <span className="rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-[11px] font-black text-green-800 dark:border-green-700 dark:bg-green-900/30 dark:text-green-200">
+                      ACEPTADA
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-black text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
+                      RECHAZADA
+                    </span>
+                  )}
+                </div>
+
+                <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                  {item.invitedEmail ? item.invitedEmail : "(sin email)"} · Invitada:{" "}
+                  {fmtDateTime(item.invitedAtSec)}
+                  {item.status !== "pending" && item.respondedAtSec
+                    ? ` · Respondida: ${fmtDateTime(item.respondedAtSec)}`
+                    : ""}
+                </div>
+
+                {item.mode === "direct" && item.directJustification ? (
+                  <div className="mt-2 text-xs text-gray-700 dark:text-gray-300">
+                    <span className="font-black">Justificación:</span> {item.directJustification}
+                  </div>
+                ) : null}
+              </a>
+            ))
+          )}
         </div>
       </div>
 

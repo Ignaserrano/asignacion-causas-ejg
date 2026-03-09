@@ -272,7 +272,7 @@ export default function RegistrarCobroPageClient() {
       id: makeId(),
       concept: "honorarios",
       label: "",
-      amount: 0,
+      amount: "" as unknown as number,
       currency: "ARS",
     },
   ]);
@@ -561,7 +561,7 @@ export default function RegistrarCobroPageClient() {
         id: makeId(),
         concept: "honorarios",
         label: "",
-        amount: 0,
+        amount: "" as unknown as number,
         currency: "ARS",
       },
     ]);
@@ -582,7 +582,7 @@ export default function RegistrarCobroPageClient() {
         id: makeId(),
         concept: "honorarios",
         label: "",
-        amount: 0,
+        amount: "" as unknown as number,
         currency,
       },
     ]);
@@ -855,7 +855,7 @@ export default function RegistrarCobroPageClient() {
 
       if (ticketCharge.caseRef?.caseId) {
         await addAutoLog({
-          caseId: ticketCharge.caseRef.caseId,
+          caseId: ticketCharge.caseId,
           uid: user.uid,
           email: user.email ?? "",
           title: "Transferencias internas realizadas",
@@ -1167,8 +1167,13 @@ export default function RegistrarCobroPageClient() {
 
                   <input
                     type="number"
-                    value={Number(item.amount ?? 0)}
-                    onChange={(e) => updateItem(item.id, { amount: Number(e.target.value) })}
+                    value={item.amount === ("" as unknown as number) ? "" : Number(item.amount ?? "")}
+                    onChange={(e) =>
+                      updateItem(item.id, {
+                        amount:
+                          e.target.value === "" ? ("" as unknown as number) : Number(e.target.value),
+                      })
+                    }
                     className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   />
 
@@ -1215,45 +1220,6 @@ export default function RegistrarCobroPageClient() {
                     {fmtMoney(grossAmount, currency)}
                   </div>
                 </div>
-              </div>
-
-              <div className="grid gap-3">
-                <label className="inline-flex items-center gap-2 text-sm font-extrabold text-gray-900 dark:text-gray-100">
-                  <input
-                    type="checkbox"
-                    checked={installmentsEnabled}
-                    onChange={(e) => setInstallmentsEnabled(e.target.checked)}
-                  />
-                  Este cobro corresponde a una obligación en cuotas
-                </label>
-
-                {installmentsEnabled ? (
-                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                    <label className="grid min-w-0 gap-1">
-                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                        Cantidad total de cuotas
-                      </span>
-                      <input
-                        type="number"
-                        value={installmentsTotal}
-                        onChange={(e) => setInstallmentsTotal(Number(e.target.value))}
-                        className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      />
-                    </label>
-
-                    <label className="grid min-w-0 gap-1">
-                      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                        Número de cuota cancelada
-                      </span>
-                      <input
-                        type="number"
-                        value={installmentsCurrent}
-                        onChange={(e) => setInstallmentsCurrent(Number(e.target.value))}
-                        className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      />
-                    </label>
-                  </div>
-                ) : null}
               </div>
 
               <label className="grid min-w-0 gap-1">

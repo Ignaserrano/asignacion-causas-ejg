@@ -168,6 +168,63 @@ function approxNetForLoggedUser(params: {
   return distributable / participantsCount;
 }
 
+function round2(n: number) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
+function addMonthsKeepingDay(baseDate: Date, monthsToAdd: number) {
+  const originalDay = baseDate.getDate();
+  const result = new Date(baseDate);
+  result.setMonth(result.getMonth() + monthsToAdd);
+
+  if (result.getDate() < originalDay) {
+    result.setDate(0);
+  }
+
+  return result;
+}
+
+function splitAmountIntoInstallments(total: number, installments: number) {
+  const safeTotal = round2(Number(total || 0));
+  const safeInstallments = Math.max(1, Number(installments || 1));
+
+  const base = round2(safeTotal / safeInstallments);
+  const values: number[] = [];
+
+  let accumulated = 0;
+  for (let i = 0; i < safeInstallments; i++) {
+    if (i < safeInstallments - 1) {
+      values.push(base);
+      accumulated = round2(accumulated + base);
+    } else {
+      values.push(round2(safeTotal - accumulated));
+    }
+  }
+
+  return values;
+}
+
+function splitItemsAcrossInstallments(items: ChargeItem[], installments: number): ChargeItem[][] {
+  const totalInstallments = Math.max(1, Number(installments || 1));
+
+  const perInstallmentItems: ChargeItem[][] = Array.from({ length: totalInstallments }, () => []);
+
+  for (const item of items) {
+    const itemAmount = round2(Number(item.amount || 0));
+    const itemSplits = splitAmountIntoInstallments(itemAmount, totalInstallments);
+
+    for (let i = 0; i < totalInstallments; i++) {
+      perInstallmentItems[i].push({
+        ...item,
+        id: makeId(),
+        amount: itemSplits[i],
+      });
+    }
+  }
+
+  return perInstallmentItems;
+}
+
 function Modal({
   open,
   title,
@@ -608,7 +665,16 @@ export default function CobranzasPage() {
       return;
     }
 
-    const validItems = items.filter((x) => Number(x.amount) > 0);
+    const validItems = items
+      .map((x) => ({
+        ...x,
+        amount:
+          x.amount === ("" as unknown as number)
+            ? ("" as unknown as number)
+            : Number(x.amount),
+      }))
+      .filter((x) => Number(x.amount) > 0);
+
     if (validItems.length === 0) {
       alert("Ingresá al menos un rubro con monto mayor a cero.");
       return;
@@ -629,31 +695,62 @@ export default function CobranzasPage() {
     setSavingScheduled(true);
 
     try {
-      await createScheduledCharge({
-        ownerUid: user.uid,
-        ownerEmail: user.email ?? "",
-        visibleToUids,
-        caseId: originType === "case" ? selectedCaseId : undefined,
-        caratula: originType === "case" ? safeText(selectedCase?.caratulaTentativa) : undefined,
-        extraCaseReason: originType === "extra" ? safeText(extraCaseReason) : undefined,
-        payer: {
-          contactId: safeText(selectedContact.id) || undefined,
-          displayName: getContactFullName(selectedContact),
-          email: safeText(selectedContact.email),
-          phone: safeText(selectedContact.phone),
-          cuit: safeText(selectedContact.cuit),
-        },
-        items: validItems,
-        scheduledDate: new Date(scheduledDateInput),
-        currency,
-        installments: installmentsEnabled
-          ? {
+      const baseScheduledDate = new Date(scheduledDateInput);
+
+      if (installmentsEnabled) {
+        const totalInstallments = Math.max(1, Number(installmentsTotal || 1));
+        const itemsPerInstallment = splitItemsAcrossInstallments(validItems, totalInstallments);
+
+        for (let i = 0; i < totalInstallments; i++) {
+          const installmentDate = addMonthsKeepingDay(baseScheduledDate, i);
+
+          await createScheduledCharge({
+            ownerUid: user.uid,
+            ownerEmail: user.email ?? "",
+            visibleToUids,
+            caseId: originType === "case" ? selectedCaseId : undefined,
+            caratula: originType === "case" ? safeText(selectedCase?.caratulaTentativa) : undefined,
+            extraCaseReason: originType === "extra" ? safeText(extraCaseReason) : undefined,
+            payer: {
+              contactId: safeText(selectedContact.id) || undefined,
+              displayName: getContactFullName(selectedContact),
+              email: safeText(selectedContact.email),
+              phone: safeText(selectedContact.phone),
+              cuit: safeText(selectedContact.cuit),
+            },
+            items: itemsPerInstallment[i],
+            scheduledDate: installmentDate,
+            currency,
+            installments: {
               enabled: true,
-              total: Number(installmentsTotal),
-            }
-          : { enabled: false },
-        notes: safeText(notes),
-      });
+              total: totalInstallments,
+              current: i + 1,
+            },
+            notes: safeText(notes),
+          });
+        }
+      } else {
+        await createScheduledCharge({
+          ownerUid: user.uid,
+          ownerEmail: user.email ?? "",
+          visibleToUids,
+          caseId: originType === "case" ? selectedCaseId : undefined,
+          caratula: originType === "case" ? safeText(selectedCase?.caratulaTentativa) : undefined,
+          extraCaseReason: originType === "extra" ? safeText(extraCaseReason) : undefined,
+          payer: {
+            contactId: safeText(selectedContact.id) || undefined,
+            displayName: getContactFullName(selectedContact),
+            email: safeText(selectedContact.email),
+            phone: safeText(selectedContact.phone),
+            cuit: safeText(selectedContact.cuit),
+          },
+          items: validItems,
+          scheduledDate: baseScheduledDate,
+          currency,
+          installments: { enabled: false },
+          notes: safeText(notes),
+        });
+      }
 
       if (user) {
         const qScheduled = query(
@@ -718,13 +815,6 @@ export default function CobranzasPage() {
         >
           Agendar próximo cobro
         </button>
-
-        <Link
-          href="/cobranzas/realizadas"
-          className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-        >
-          Ver cobros realizados
-        </Link>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -746,12 +836,12 @@ export default function CobranzasPage() {
             ) : (
               currentMonthPaidCharges.slice(0, 10).map((c) => (
                 <div key={c.id} className="py-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
                         {safeText(c.payerRef?.displayName) || "(sin pagador)"}
                       </div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300">
+                      <div className="break-words text-xs text-gray-600 dark:text-gray-300">
                         {c.caseRef?.isExtraCase
                           ? safeText(c.caseRef?.extraCaseReason) || "Cobro extra-caso"
                           : safeText(c.caseRef?.caratula) || "Sin causa"}
@@ -760,13 +850,22 @@ export default function CobranzasPage() {
                       </div>
                     </div>
 
-                    <div className="text-right text-sm font-black text-gray-900 dark:text-gray-100">
+                    <div className="shrink-0 whitespace-nowrap text-right text-sm font-black text-gray-900 dark:text-gray-100">
                       {fmtMoney(getChargeUserNetAmount(c, user?.uid), c.currency)}
                     </div>
                   </div>
                 </div>
               ))
             )}
+          </div>
+
+          <div className="mt-4">
+            <Link
+              href="/cobranzas/realizadas"
+              className="inline-flex rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              Ver histórico de cobros
+            </Link>
           </div>
         </div>
 
@@ -874,7 +973,7 @@ export default function CobranzasPage() {
                               {" · "}
                               Neto aprox.: {fmtMoney(c.approxNetForUser, c.currency)}
                               {c.installments?.enabled && c.installments?.total
-                                ? ` · Cuotas: ${c.installments.total}`
+                                ? ` · Cuota ${c.installments.current ?? "?"} de ${c.installments.total}`
                                 : ""}
                             </div>
                           </div>
@@ -1135,6 +1234,7 @@ export default function CobranzasPage() {
                     </span>
                     <input
                       type="number"
+                      min={1}
                       value={installmentsTotal}
                       onChange={(e) =>
                         setInstallmentsTotal(e.target.value === "" ? "" : Number(e.target.value))
@@ -1142,6 +1242,12 @@ export default function CobranzasPage() {
                       className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                     />
                   </label>
+                ) : null}
+
+                {installmentsEnabled && Number(installmentsTotal || 0) > 0 ? (
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+                    Se crearán {Number(installmentsTotal)} cobros agendados: el primero en la fecha indicada y los siguientes cada mes. El monto total se dividirá automáticamente entre todas las cuotas.
+                  </div>
                 ) : null}
 
                 <label className="grid min-w-0 gap-1">
