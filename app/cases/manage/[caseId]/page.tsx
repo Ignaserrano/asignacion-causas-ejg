@@ -42,6 +42,7 @@ import {
   removeRoleFromContactCaseLink,
   syncCaseCaratulaToContactLinks,
 } from "@/lib/caseManagement";
+import { getChargeUserNetAmount } from "@/lib/charges";
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
 
@@ -120,9 +121,74 @@ type MetaDraft = Partial<ManagementMeta> & {
   caratulaTentativa?: string;
 };
 
+type CasePaidChargeRow = {
+  id: string;
+  status?: "scheduled" | "paid" | "cancelled";
+  ownerUid?: string;
+  caseRef?: {
+    caseId?: string | null;
+    caratula?: string;
+    isExtraCase?: boolean;
+    extraCaseReason?: string;
+  };
+  payerRef?: {
+    contactId?: string | null;
+    displayName?: string;
+    email?: string;
+    phone?: string;
+    cuit?: string;
+  };
+  totalAmount?: number;
+  currency?: "ARS" | "USD";
+  paidAt?: any;
+  installments?: {
+    enabled?: boolean;
+    total?: number;
+    current?: number;
+  };
+  distribution?: {
+    grossAmount?: number;
+    deductionsTotal?: number;
+    baseNetAmount?: number;
+    studioFundAmount?: number;
+    distributableAmount?: number;
+    participants?: Array<{
+      id: string;
+      uid?: string;
+      displayName: string;
+      percent: number;
+      amount: number;
+      kind: "lawyer" | "external";
+    }>;
+  };
+  transferTicket?: {
+    status?: "pending" | "done";
+    createdAt?: any;
+    confirmedAt?: any;
+    confirmedByUid?: string;
+  };
+};
+
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
   return new Date(seconds * 1000).toLocaleString();
+}
+
+function toDate(value?: any) {
+  if (!value) return null;
+  if (value?.toDate) return value.toDate();
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function fmtDate(value?: any) {
+  const d = toDate(value);
+  if (!d) return "-";
+  return d.toLocaleDateString("es-AR");
+}
+
+function fmtMoney(n?: number, currency?: string) {
+  return `${Number(n ?? 0).toLocaleString("es-AR")} ${currency ?? ""}`.trim();
 }
 
 function safeLower(s: any) {
@@ -324,6 +390,10 @@ export default function ManageCasePage() {
   const [archivingCase, setArchivingCase] = useState(false);
   const [deletingPartyId, setDeletingPartyId] = useState<string | null>(null);
 
+  const [caseChargesModalOpen, setCaseChargesModalOpen] = useState(false);
+  const [caseChargesLoading, setCaseChargesLoading] = useState(false);
+  const [caseChargesRows, setCaseChargesRows] = useState<CasePaidChargeRow[]>([]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -505,9 +575,7 @@ export default function ManageCasePage() {
         >;
 
         const filtered = all.filter((c) => {
-          const full = safeLower(
-            c.fullName || `${c.name ?? ""} ${c.lastName ?? ""}`.trim()
-          );
+          const full = safeLower(c.fullName || `${c.name ?? ""} ${c.lastName ?? ""}`.trim());
           return tokens.every((t) => full.includes(t));
         });
 
@@ -934,6 +1002,35 @@ export default function ManageCasePage() {
     }
   }
 
+  async function openCaseChargesModal() {
+    if (!user) return;
+
+    setCaseChargesModalOpen(true);
+    setCaseChargesLoading(true);
+
+    try {
+      const qCharges = query(
+        collection(db, "charges"),
+        where("visibleToUids", "array-contains", user.uid),
+        where("status", "==", "paid"),
+        limit(1000)
+      );
+
+      const snap = await getDocs(qCharges);
+
+      const rows = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) }) as CasePaidChargeRow)
+        .filter((row) => String(row.caseRef?.caseId ?? "").trim() === caseId);
+
+      setCaseChargesRows(rows);
+    } catch (e: any) {
+      alert(e?.message ?? "No pude cargar los cobros de esta causa.");
+      setCaseChargesRows([]);
+    } finally {
+      setCaseChargesLoading(false);
+    }
+  }
+
   const archiveStatusText = archiveRequestDone
     ? "Solicitud de archivo realizada"
     : "Solicitar archivo de la causa";
@@ -946,6 +1043,28 @@ export default function ManageCasePage() {
     !contactError &&
     contactResults.length === 0 &&
     !selectedContact;
+
+  const sortedCaseCharges = useMemo(() => {
+    return [...caseChargesRows].sort((a, b) => {
+      const aa = toDate(a.paidAt)?.getTime() ?? 0;
+      const bb = toDate(b.paidAt)?.getTime() ?? 0;
+      return bb - aa;
+    });
+  }, [caseChargesRows]);
+
+  const caseChargesGrossTotal = useMemo(() => {
+    return sortedCaseCharges.reduce(
+      (sum, row) => sum + Number(row.distribution?.grossAmount ?? row.totalAmount ?? 0),
+      0
+    );
+  }, [sortedCaseCharges]);
+
+  const caseChargesMyNetTotal = useMemo(() => {
+    return sortedCaseCharges.reduce(
+      (sum, row) => sum + getChargeUserNetAmount(row, user?.uid),
+      0
+    );
+  }, [sortedCaseCharges, user?.uid]);
 
   return (
     <AppShell
@@ -997,12 +1116,13 @@ export default function ManageCasePage() {
                 </button>
               ) : null}
 
-              <Link
-                href={`/cobranzas?caseId=${caseId}`}
+              <button
+                type="button"
+                onClick={openCaseChargesModal}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
               >
                 Ver cobros
-              </Link>
+              </button>
 
               <Link
                 href={`/cobranzas/registrar?caseId=${caseId}`}
@@ -1775,6 +1895,142 @@ export default function ManageCasePage() {
             cancelLabel="Cancelar"
           />
         ) : null}
+      </Modal>
+
+      <Modal
+        open={caseChargesModalOpen}
+        title={`Cobros realizados de la causa${caseDoc?.caratulaTentativa ? ` · ${caseDoc.caratulaTentativa}` : ""}`}
+        onClose={() => setCaseChargesModalOpen(false)}
+      >
+        {caseChargesLoading ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            Cargando cobros...
+          </div>
+        ) : sortedCaseCharges.length === 0 ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
+            No hay cobros registrados para esta causa.
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Cantidad de cobros
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {sortedCaseCharges.length}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Total bruto
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {fmtMoney(caseChargesGrossTotal, sortedCaseCharges[0]?.currency)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Mi neto total
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {fmtMoney(caseChargesMyNetTotal, sortedCaseCharges[0]?.currency)}
+                </div>
+              </div>
+            </div>
+
+            <div className="divide-y divide-gray-100 rounded-2xl border border-gray-200 dark:divide-gray-800 dark:border-gray-800">
+              {sortedCaseCharges.map((r) => {
+                const myNet = getChargeUserNetAmount(r, user?.uid);
+                const gross = Number(r.distribution?.grossAmount ?? r.totalAmount ?? 0);
+
+                return (
+                  <div key={r.id} className="p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-[220px] flex-1">
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {valueOrDash(r.payerRef?.displayName)}
+                        </div>
+
+                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                          Fecha: {fmtDate(r.paidAt)}
+                          {r.installments?.enabled && r.installments?.total
+                            ? ` · Cuota ${Number(r.installments.current ?? 0)} de ${Number(
+                                r.installments.total ?? 0
+                              )}`
+                            : ""}
+                        </div>
+
+                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                          {valueOrDash(r.payerRef?.email)}
+                          {String(r.payerRef?.email ?? "").trim() && String(r.payerRef?.phone ?? "").trim()
+                            ? " · "
+                            : ""}
+                          {String(r.payerRef?.phone ?? "").trim() ? r.payerRef?.phone : ""}
+                          {String(r.payerRef?.cuit ?? "").trim()
+                            ? `${String(r.payerRef?.email ?? "").trim() || String(r.payerRef?.phone ?? "").trim() ? " · " : ""}CUIT/CUIL: ${r.payerRef?.cuit}`
+                            : ""}
+                        </div>
+                      </div>
+
+                      <div className="min-w-[180px] text-right">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">Bruto</div>
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {fmtMoney(gross, r.currency)}
+                        </div>
+
+                        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">Mi neto</div>
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {fmtMoney(myNet, r.currency)}
+                        </div>
+
+                        <div className="mt-2 text-xs font-bold">
+                          {r.transferTicket?.status === "done" ? (
+                            <span className="text-green-700 dark:text-green-300">
+                              Transferencias confirmadas
+                            </span>
+                          ) : r.transferTicket?.status === "pending" ? (
+                            <span className="text-amber-700 dark:text-amber-300">
+                              Ticket pendiente
+                            </span>
+                          ) : (
+                            <span className="text-gray-500 dark:text-gray-400">Sin ticket</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {(r.distribution?.participants ?? []).length > 0 ? (
+                      <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                        <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                          Participantes de la distribución
+                        </div>
+
+                        <div className="mt-2 grid gap-2">
+                          {(r.distribution?.participants ?? []).map((p) => (
+                            <div
+                              key={p.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            >
+                              <div className="font-semibold text-gray-900 dark:text-gray-100">
+                                {p.displayName}
+                              </div>
+                              <div className="font-black text-gray-900 dark:text-gray-100">
+                                {p.percent}% · {fmtMoney(p.amount, r.currency)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </Modal>
     </AppShell>
   );
