@@ -216,6 +216,24 @@ function getContactFullName(c?: ContactDoc | null) {
   );
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function formatDateTimeLocal(date: Date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(
+    date.getHours()
+  )}:${pad2(date.getMinutes())}`;
+}
+
+function addMinutesToDateTimeLocal(value: string, minutes: number) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  d.setMinutes(d.getMinutes() + minutes);
+  return formatDateTimeLocal(d);
+}
+
 const STATUS_LABEL: Record<CaseStatus, string> = {
   preliminar: "Preliminar",
   iniciada: "Iniciada",
@@ -377,6 +395,7 @@ export default function ManageCasePage() {
   const [calendarStart, setCalendarStart] = useState("");
   const [calendarEnd, setCalendarEnd] = useState("");
   const [calendarLocation, setCalendarLocation] = useState("");
+  const [calendarEndManuallyEdited, setCalendarEndManuallyEdited] = useState(false);
 
   const [sentResult, setSentResult] = useState<"ganado" | "perdido" | "empatado">("ganado");
   const [sentResumen, setSentResumen] = useState("");
@@ -502,9 +521,14 @@ export default function ManageCasePage() {
 
     (async () => {
       try {
-        const assignedUids = Array.from(new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean)));
+        const assignedUids = Array.from(
+          new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean))
+        );
         const involvedUids = Array.from(
-          new Set([...(caseDoc.confirmedAssigneesUids ?? []), caseDoc.broughtByUid ?? ""].filter(Boolean))
+          new Set([
+            ...(caseDoc.confirmedAssigneesUids ?? []),
+            caseDoc.broughtByUid ?? "",
+          ].filter(Boolean))
         );
 
         if (involvedUids.length === 0) {
@@ -513,7 +537,9 @@ export default function ManageCasePage() {
           return;
         }
 
-        const involvedDocs = await Promise.all(involvedUids.map((uid) => getDoc(doc(db, "users", uid))));
+        const involvedDocs = await Promise.all(
+          involvedUids.map((uid) => getDoc(doc(db, "users", uid)))
+        );
         const involved = involvedDocs
           .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
           .map((e) => String(e).trim())
@@ -526,7 +552,9 @@ export default function ManageCasePage() {
           return;
         }
 
-        const assignedDocs = await Promise.all(assignedUids.map((uid) => getDoc(doc(db, "users", uid))));
+        const assignedDocs = await Promise.all(
+          assignedUids.map((uid) => getDoc(doc(db, "users", uid)))
+        );
         const assigned = assignedDocs
           .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
           .map((e) => String(e).trim())
@@ -656,7 +684,9 @@ export default function ManageCasePage() {
         updatedAt: serverTimestamp(),
       });
 
-      const nextCaratula = String(casePatch?.caratulaTentativa ?? caseDoc?.caratulaTentativa ?? "").trim();
+      const nextCaratula = String(
+        casePatch?.caratulaTentativa ?? caseDoc?.caratulaTentativa ?? ""
+      ).trim();
       const currentCaratula = String(caseDoc?.caratulaTentativa ?? "").trim();
 
       if (casePatch && Object.keys(casePatch).length > 0) {
@@ -818,7 +848,26 @@ export default function ManageCasePage() {
     return `${bracket}${rawTitle}`.trim();
   }
 
-    async function addLogEntry() {
+  function handleCalendarStartChange(value: string) {
+    setCalendarStart(value);
+
+    if (!value) {
+      setCalendarEnd("");
+      setCalendarEndManuallyEdited(false);
+      return;
+    }
+
+    if (!calendarEndManuallyEdited || !calendarEnd) {
+      setCalendarEnd(addMinutesToDateTimeLocal(value, 30));
+    }
+  }
+
+  function handleCalendarEndChange(value: string) {
+    setCalendarEnd(value);
+    setCalendarEndManuallyEdited(Boolean(value));
+  }
+
+  async function addLogEntry() {
     if (!user) return;
     if (!canWrite) return alert("Sin permisos.");
 
@@ -899,21 +948,21 @@ export default function ManageCasePage() {
       });
 
       if (wantsCalendar && calendarStartDate) {
-  await createAutoEventFromCaseLog({
-    caseId,
-    caratula: String(caseDoc?.caratulaTentativa ?? "").trim(),
-    ownerUid: user.uid,
-    ownerEmail: user.email ?? "",
-    caseParticipantUids: caseDoc?.confirmedAssigneesUids ?? [],
-    logId: logRef.id,
-    logType,
-    title: buildCalendarTitle(title),
-    body: logBody.trim(),
-    startAt: calendarStartDate,
-    endAt: calendarEndDate ?? undefined,
-    location: calendarLocation.trim(),
-  });
-}
+        await createAutoEventFromCaseLog({
+          caseId,
+          caratula: String(caseDoc?.caratulaTentativa ?? "").trim(),
+          ownerUid: user.uid,
+          ownerEmail: user.email ?? "",
+          caseParticipantUids: caseDoc?.confirmedAssigneesUids ?? [],
+          logId: logRef.id,
+          logType,
+          title: buildCalendarTitle(title),
+          body: logBody.trim(),
+          startAt: calendarStartDate,
+          endAt: calendarEndDate ?? undefined,
+          location: calendarLocation.trim(),
+        });
+      }
 
       await updateDoc(managementMetaRef(caseId), {
         updatedAt: serverTimestamp(),
@@ -932,6 +981,7 @@ export default function ManageCasePage() {
       setLogBody("");
       setCalendarStart("");
       setCalendarEnd("");
+      setCalendarEndManuallyEdited(false);
       setCalendarLocation("");
       setSentPdf(null);
       setSentResumen("");
@@ -1186,7 +1236,9 @@ export default function ManageCasePage() {
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-black text-gray-900 dark:text-gray-100">Datos de gestión</div>
+                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                  Datos de gestión
+                </div>
                 <button
                   type="button"
                   onClick={openMetaModal}
@@ -1229,7 +1281,8 @@ export default function ManageCasePage() {
                   <span>{valueOrDash(meta?.expedienteNumber)}</span>
                 </div>
                 <div>
-                  <span className="font-black">Juzgado:</span> <span>{valueOrDash(meta?.court)}</span>
+                  <span className="font-black">Juzgado:</span>{" "}
+                  <span>{valueOrDash(meta?.court)}</span>
                 </div>
                 <div>
                   <span className="font-black">Fuero:</span> <span>{valueOrDash(meta?.fuero)}</span>
@@ -1248,7 +1301,9 @@ export default function ManageCasePage() {
                 </div>
                 <div>
                   <span className="font-black">Abogados asignados:</span>{" "}
-                  <span>{assignedLawyerEmails.length > 0 ? assignedLawyerEmails.join(", ") : "-"}</span>
+                  <span>
+                    {assignedLawyerEmails.length > 0 ? assignedLawyerEmails.join(", ") : "-"}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1256,12 +1311,16 @@ export default function ManageCasePage() {
             <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-black text-gray-900 dark:text-gray-100">Partes</div>
-                <div className="text-xs text-gray-600 dark:text-gray-300">{parties.length} cargadas</div>
+                <div className="text-xs text-gray-600 dark:text-gray-300">
+                  {parties.length} cargadas
+                </div>
               </div>
 
               <div className="mt-3 rounded-xl border border-gray-100 dark:border-gray-800">
                 {parties.length === 0 ? (
-                  <div className="p-3 text-sm text-gray-700 dark:text-gray-200">No hay partes cargadas.</div>
+                  <div className="p-3 text-sm text-gray-700 dark:text-gray-200">
+                    No hay partes cargadas.
+                  </div>
                 ) : (
                   parties.map((p, idx) => (
                     <div
@@ -1298,7 +1357,9 @@ export default function ManageCasePage() {
               </div>
 
               <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-800">
-                <div className="text-sm font-black text-gray-900 dark:text-gray-100">Agregar parte</div>
+                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                  Agregar parte
+                </div>
 
                 <div className="mt-3">
                   <div className="relative">
@@ -1332,7 +1393,9 @@ export default function ManageCasePage() {
                     ) : null}
 
                     {contactError ? (
-                      <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">{contactError}</div>
+                      <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+                        {contactError}
+                      </div>
                     ) : null}
 
                     {showNoContactsFound ? (
@@ -1446,7 +1509,9 @@ export default function ManageCasePage() {
           </div>
 
           <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <div className="text-sm font-black text-gray-900 dark:text-gray-100">Nueva entrada de bitácora</div>
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Nueva entrada de bitácora
+            </div>
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <label className="grid gap-1">
@@ -1466,7 +1531,9 @@ export default function ManageCasePage() {
               </label>
 
               <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Título</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Título
+                </span>
                 <input
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logTitle}
@@ -1477,7 +1544,9 @@ export default function ManageCasePage() {
               </label>
 
               <label className="grid gap-1 md:col-span-2">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Detalle</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Detalle
+                </span>
                 <textarea
                   className="min-h-[90px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logBody}
@@ -1496,24 +1565,28 @@ export default function ManageCasePage() {
                       type="datetime-local"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarStart}
-                      onChange={(e) => setCalendarStart(e.target.value)}
+                      onChange={(e) => handleCalendarStartChange(e.target.value)}
                       disabled={!canWrite}
                     />
                   </label>
 
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fin (opcional)</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Fin (opcional)
+                    </span>
                     <input
                       type="datetime-local"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarEnd}
-                      onChange={(e) => setCalendarEnd(e.target.value)}
+                      onChange={(e) => handleCalendarEndChange(e.target.value)}
                       disabled={!canWrite}
                     />
                   </label>
 
                   <label className="grid gap-1 md:col-span-2">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Más datos</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Más datos
+                    </span>
                     <input
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarLocation}
@@ -1553,11 +1626,15 @@ export default function ManageCasePage() {
                   </label>
 
                   <label className="grid gap-1">
-                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Resultado</span>
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Resultado
+                    </span>
                     <select
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={sentResult}
-                      onChange={(e) => setSentResult(e.target.value as "ganado" | "perdido" | "empatado")}
+                      onChange={(e) =>
+                        setSentResult(e.target.value as "ganado" | "perdido" | "empatado")
+                      }
                       disabled={!canWrite}
                     >
                       <option value="ganado">Ganado</option>
@@ -1743,7 +1820,9 @@ export default function ManageCasePage() {
       >
         <div className="grid gap-3">
           <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Carátula</span>
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+              Carátula
+            </span>
             <input
               className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
               value={String(metaDraft.caratulaTentativa ?? "")}
@@ -1776,7 +1855,9 @@ export default function ManageCasePage() {
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Nº expediente</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Nº expediente
+              </span>
               <input
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.expedienteNumber ?? "")}
@@ -1785,7 +1866,9 @@ export default function ManageCasePage() {
             </label>
 
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Juzgado</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Juzgado
+              </span>
               <input
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.court ?? "")}
@@ -1796,7 +1879,9 @@ export default function ManageCasePage() {
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Jurisdicción</span>
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Jurisdicción
+              </span>
               <select
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as")}
@@ -1806,10 +1891,7 @@ export default function ManageCasePage() {
                     return {
                       ...m,
                       jurisdiccion: next,
-                      fuero:
-                        next === "provincia_bs_as"
-                          ? String(m.fuero ?? "")
-                          : String(m.fuero ?? ""),
+                      fuero: next === "provincia_bs_as" ? String(m.fuero ?? "") : String(m.fuero ?? ""),
                       deptoJudicial: next === "provincia_bs_as" ? String(m.deptoJudicial ?? "") : "",
                     };
                   })
@@ -1824,7 +1906,9 @@ export default function ManageCasePage() {
 
             {(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion) === "provincia_bs_as" ? (
               <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fuero</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Fuero
+                </span>
                 <select
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={String(metaDraft.fuero ?? "")}
@@ -1840,7 +1924,9 @@ export default function ManageCasePage() {
               </label>
             ) : (
               <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Fuero</span>
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Fuero
+                </span>
                 <input
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={String(metaDraft.fuero ?? "")}
@@ -1871,7 +1957,9 @@ export default function ManageCasePage() {
           ) : null}
 
           <label className="grid gap-1">
-            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Estado</span>
+            <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+              Estado
+            </span>
             <select
               className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
               value={String(metaDraft.status ?? "preliminar")}
@@ -1924,7 +2012,9 @@ export default function ManageCasePage() {
 
       <Modal
         open={caseChargesModalOpen}
-        title={`Cobros realizados de la causa${caseDoc?.caratulaTentativa ? ` · ${caseDoc.caratulaTentativa}` : ""}`}
+        title={`Cobros realizados de la causa${
+          caseDoc?.caratulaTentativa ? ` · ${caseDoc.caratulaTentativa}` : ""
+        }`}
         onClose={() => setCaseChargesModalOpen(false)}
       >
         {caseChargesLoading ? (
@@ -1990,12 +2080,18 @@ export default function ManageCasePage() {
 
                         <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
                           {valueOrDash(r.payerRef?.email)}
-                          {String(r.payerRef?.email ?? "").trim() && String(r.payerRef?.phone ?? "").trim()
+                          {String(r.payerRef?.email ?? "").trim() &&
+                          String(r.payerRef?.phone ?? "").trim()
                             ? " · "
                             : ""}
                           {String(r.payerRef?.phone ?? "").trim() ? r.payerRef?.phone : ""}
                           {String(r.payerRef?.cuit ?? "").trim()
-                            ? `${String(r.payerRef?.email ?? "").trim() || String(r.payerRef?.phone ?? "").trim() ? " · " : ""}CUIT/CUIL: ${r.payerRef?.cuit}`
+                            ? `${
+                                String(r.payerRef?.email ?? "").trim() ||
+                                String(r.payerRef?.phone ?? "").trim()
+                                  ? " · "
+                                  : ""
+                              }CUIT/CUIL: ${r.payerRef?.cuit}`
                             : ""}
                         </div>
                       </div>
