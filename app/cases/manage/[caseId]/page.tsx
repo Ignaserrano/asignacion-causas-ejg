@@ -43,6 +43,7 @@ import {
   syncCaseCaratulaToContactLinks,
 } from "@/lib/caseManagement";
 import { getChargeUserNetAmount } from "@/lib/charges";
+import { createAutoEventFromCaseLog } from "@/lib/events";
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
 
@@ -817,7 +818,7 @@ export default function ManageCasePage() {
     return `${bracket}${rawTitle}`.trim();
   }
 
-  async function addLogEntry() {
+    async function addLogEntry() {
     if (!user) return;
     if (!canWrite) return alert("Sin permisos.");
 
@@ -864,9 +865,16 @@ export default function ManageCasePage() {
       }
 
       let calendarPayload: any = null;
+      let calendarStartDate: Date | null = null;
+      let calendarEndDate: Date | null = null;
+
       if (wantsCalendar) {
         const start = new Date(calendarStart);
         const end = calendarEnd ? new Date(calendarEnd) : new Date(start.getTime() + 60 * 60 * 1000);
+
+        calendarStartDate = start;
+        calendarEndDate = end;
+
         calendarPayload = {
           startAt: Timestamp.fromDate(start),
           endAt: Timestamp.fromDate(end),
@@ -877,7 +885,7 @@ export default function ManageCasePage() {
         };
       }
 
-      await addDoc(logsColRef(caseId), {
+      const logRef = await addDoc(logsColRef(caseId), {
         type: logType,
         title,
         body: logBody.trim(),
@@ -889,6 +897,23 @@ export default function ManageCasePage() {
         calendar: calendarPayload,
         sentencia: sentenciaPayload,
       });
+
+      if (wantsCalendar && calendarStartDate) {
+  await createAutoEventFromCaseLog({
+    caseId,
+    caratula: String(caseDoc?.caratulaTentativa ?? "").trim(),
+    ownerUid: user.uid,
+    ownerEmail: user.email ?? "",
+    caseParticipantUids: caseDoc?.confirmedAssigneesUids ?? [],
+    logId: logRef.id,
+    logType,
+    title: buildCalendarTitle(title),
+    body: logBody.trim(),
+    startAt: calendarStartDate,
+    endAt: calendarEndDate ?? undefined,
+    location: calendarLocation.trim(),
+  });
+}
 
       await updateDoc(managementMetaRef(caseId), {
         updatedAt: serverTimestamp(),

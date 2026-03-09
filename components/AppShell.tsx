@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 import PushNotificationsClient from "@/components/PushNotificationsClient";
 import InstallButton from "@/components/InstallButton";
 
@@ -32,7 +34,6 @@ type Tab = {
   label: string;
   badge?: React.ReactNode;
   icon?: React.ReactNode;
-  iconOnly?: boolean;
 };
 
 type BreadcrumbItem = {
@@ -159,34 +160,75 @@ function IconSpecialties({ className }: { className?: string }) {
   );
 }
 
-function TabLink({ t }: { t: Tab }) {
-  const common =
-    "shrink-0 rounded-xl border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-gray-900 " +
-    "dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-800 dark:hover:text-white";
+function IconCalendar({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
-  if (t.icon && t.iconOnly) {
-    return (
-      <Link
-        key={t.href}
-        href={t.href}
-        title={t.label}
-        aria-label={t.label}
-        className={`${common} px-3 py-2`}
-      >
-        <span className="inline-flex items-center gap-2">
-          {t.icon}
-          {t.badge ? t.badge : null}
-        </span>
-      </Link>
-    );
-  }
+function IconMoney({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 7h16v10H4z" stroke="currentColor" strokeWidth="2" />
+      <path d="M8 11h8" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function IconMenu({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconClose({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SideNavLink({
+  href,
+  label,
+  icon,
+  badge,
+  active,
+  onClick,
+}: {
+  href: string;
+  label: string;
+  icon?: React.ReactNode;
+  badge?: React.ReactNode;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const cls = active
+    ? "border-gray-900 bg-gray-900 text-white dark:border-gray-100 dark:bg-gray-100 dark:text-gray-900"
+    : "border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800";
 
   return (
-    <Link key={t.href} href={t.href} className={`${common} px-3 py-2 text-sm font-extrabold`}>
-      <span className="inline-flex items-center gap-2">
-        {t.label}
-        {t.badge ? t.badge : null}
+    <Link
+      href={href}
+      onClick={onClick}
+      className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-extrabold transition ${cls}`}
+    >
+      <span className="inline-flex min-w-0 items-center gap-2">
+        {icon ? <span className="shrink-0">{icon}</span> : null}
+        <span className="truncate">{label}</span>
       </span>
+      {badge ? <span className="shrink-0">{badge}</span> : null}
     </Link>
   );
 }
@@ -246,70 +288,86 @@ export default function AppShell({
   breadcrumbs?: BreadcrumbItem[];
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+  const [menuOpen, setMenuOpen] = useState(false);
+
   const isAdmin = role === "admin";
   const invitesCount = pendingInvites ?? 0;
 
-  const iconTabs: Tab[] = [
-    { href: "/cases/new", label: "Nueva causa", icon: <IconPlusDoc />, iconOnly: true },
-    { href: "/cases/mine", label: "Mis causas", icon: <IconBriefcase />, iconOnly: true },
-    { href: "/cases/manage", label: "Gestión de causas", icon: <IconManage />, iconOnly: true },
-    { href: "/contacts", label: "Agenda de contactos", icon: <IconContacts />, iconOnly: true },
-    {
-      href: "/invites",
-      label: "Invitaciones",
-      icon: <IconInvites />,
-      iconOnly: true,
-      badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
-    },
-    { href: "/specialties", label: "Especialidades", icon: <IconSpecialties />, iconOnly: true },
-    {
-      href: "/cobranzas",
-      label: "Cobros",
-      icon: (
-        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none">
-          <path d="M4 7h16v10H4z" stroke="currentColor" strokeWidth="2" />
-          <path d="M8 11h8" stroke="currentColor" strokeWidth="2" />
-        </svg>
-      ),
-      iconOnly: true,
-    },
-  ];
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
 
-  const textTabs: Tab[] = [{ href: "/dashboard", label: "Inicio", icon: <IconHome /> }];
+  const navTabs: Tab[] = useMemo(
+    () => [
+      { href: "/dashboard", label: "Inicio", icon: <IconHome className="h-4 w-4" /> },
+      { href: "/cases/new", label: "Nueva causa", icon: <IconPlusDoc className="h-4 w-4" /> },
+      { href: "/cases/mine", label: "Mis causas", icon: <IconBriefcase className="h-4 w-4" /> },
+      { href: "/cases/manage", label: "Gestión de causas", icon: <IconManage className="h-4 w-4" /> },
+      { href: "/contacts", label: "Agenda de contactos", icon: <IconContacts className="h-4 w-4" /> },
+      {
+        href: "/invites",
+        label: "Invitaciones",
+        icon: <IconInvites className="h-4 w-4" />,
+        badge: invitesCount > 0 ? <Badge tone="warn">{invitesCount}</Badge> : undefined,
+      },
+      { href: "/specialties", label: "Especialidades", icon: <IconSpecialties className="h-4 w-4" /> },
+      { href: "/calendar", label: "Agenda", icon: <IconCalendar className="h-4 w-4" /> },
+      { href: "/cobranzas", label: "Cobros", icon: <IconMoney className="h-4 w-4" /> },
+    ],
+    [invitesCount]
+  );
+
+  function isActive(href: string) {
+    if (!pathname) return false;
+    if (href === "/dashboard") return pathname === "/dashboard";
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
 
   return (
     <div className="min-h-dvh bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
       <PushNotificationsClient />
 
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/90 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
+      <header className="sticky top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur dark:border-gray-800 dark:bg-gray-900/80">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
-          <div className="min-w-[180px]">
-            <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setMenuOpen(true)}
+              aria-label="Abrir menú"
+              aria-expanded={menuOpen}
+              className="inline-flex items-center justify-center rounded-xl border border-gray-300 bg-white p-2 text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              <IconMenu className="h-5 w-5" />
+            </button>
 
-            <div className="mt-0.5 text-xs text-gray-600 dark:text-gray-300">
-              {subtitle ? (
-                subtitle
-              ) : userEmail ? (
-                <>
-                  Logueado como <span className="font-bold">{userEmail}</span>
-                </>
-              ) : null}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <div className="truncate text-base font-black text-gray-900 dark:text-gray-100">
+                  {title}
+                </div>
+                {isAdmin ? <Badge tone="admin">ADMIN</Badge> : null}
+              </div>
 
-              {isAdmin ? (
-                <span className="ml-2 align-middle">
-                  <Badge tone="admin">ADMIN</Badge>
-                </span>
-              ) : null}
+              <div className="mt-0.5 truncate text-xs text-gray-600 dark:text-gray-300">
+                {subtitle ? (
+                  subtitle
+                ) : userEmail ? (
+                  <>
+                    Logueado como <span className="font-bold">{userEmail}</span>
+                  </>
+                ) : null}
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-2 md:flex">
             <InstallButton />
 
             {onLogout ? (
               <button
                 onClick={onLogout}
-                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:bg-gray-50 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:bg-gray-50 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
               >
                 Cerrar sesión
               </button>
@@ -318,25 +376,79 @@ export default function AppShell({
         </div>
       </header>
 
+      {menuOpen ? (
+        <button
+          type="button"
+          aria-label="Cerrar menú"
+          onClick={() => setMenuOpen(false)}
+          className="fixed inset-0 z-40 bg-black/30 md:bg-black/20"
+        />
+      ) : null}
+
+      <aside
+        className={`fixed left-0 top-0 z-50 h-dvh w-1/2 max-w-[320px] min-w-[260px] transform border-r border-gray-200 bg-white shadow-2xl transition-transform duration-300 dark:border-gray-800 dark:bg-gray-900 md:w-[300px] ${
+          menuOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+        aria-hidden={!menuOpen}
+      >
+        <div className="flex h-full flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
+                Navegación
+              </div>
+              {userEmail ? (
+                <div className="truncate text-xs text-gray-600 dark:text-gray-300">{userEmail}</div>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setMenuOpen(false)}
+              aria-label="Cerrar menú"
+              className="inline-flex items-center justify-center rounded-xl border border-gray-300 bg-white p-2 text-gray-800 shadow-sm transition hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              <IconClose className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-3 py-3">
+            <div className="grid gap-2">
+              {navTabs.map((t) => (
+                <SideNavLink
+                  key={t.href}
+                  href={t.href}
+                  label={t.label}
+                  icon={t.icon}
+                  badge={t.badge}
+                  active={isActive(t.href)}
+                  onClick={() => setMenuOpen(false)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 px-3 py-3 dark:border-gray-800">
+            <div className="flex flex-col gap-2 md:hidden">
+              <InstallButton />
+
+              {onLogout ? (
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onLogout();
+                  }}
+                  className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-extrabold shadow-sm transition hover:bg-gray-50 hover:shadow dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  Cerrar sesión
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </aside>
+
       <div className="mx-auto max-w-6xl px-4 py-6">
-        <nav className="mb-4 flex gap-2 overflow-x-auto rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-          {textTabs.map((t) => (
-            <TabLink
-              key={t.href}
-              t={{
-                ...t,
-                iconOnly: false,
-              }}
-            />
-          ))}
-
-          <span className="mx-1 my-1 w-px shrink-0 bg-gray-200 dark:bg-gray-800" />
-
-          {iconTabs.map((t) => (
-            <TabLink key={t.href} t={t} />
-          ))}
-        </nav>
-
         <main className="min-w-0">
           <Breadcrumbs items={breadcrumbs} />
 

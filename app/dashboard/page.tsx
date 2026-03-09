@@ -24,7 +24,8 @@ import {
   IconNewCase,
   IconSpecialties,
 } from "@/components/DashboardIcons";
-import { getChargeUserNetAmount } from "@/lib/charges";
+import { getChargeUserNetAmount, getScheduledRemainingAmount } from "@/lib/charges";
+import { listUpcomingEventsForUser, type CalendarEventRow } from "@/lib/events";
 
 function IconManage({ className }: { className?: string }) {
   return (
@@ -90,6 +91,25 @@ function IconMoney({ className }: { className?: string }) {
       <rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="2" />
       <circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="2" />
       <path d="M7 12h.01M17 12h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconCalendar({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ?? "h-5 w-5"}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -172,6 +192,13 @@ type FeedItem = {
   createdByEmail?: string;
 };
 
+type FeedGroup = {
+  caseId: string;
+  caratula: string;
+  latestSec: number;
+  items: FeedItem[];
+};
+
 type InactiveItem = {
   caseId: string;
   caratula: string;
@@ -196,9 +223,19 @@ type TransferPendingItem = {
   isOwner: boolean;
 };
 
+type OverdueChargeItem = {
+  chargeId: string;
+  payerName: string;
+  caseLabel: string;
+  scheduledAtSec?: number;
+  remainingAmount?: number;
+  currency?: string;
+};
+
 type CaseRow = {
   id: string;
   caratulaTentativa?: string;
+  status?: "draft" | "assigned" | "archsolicited" | "archived";
   dashboardLastLogAt?: { seconds: number };
   dashboardLastLogTitle?: string;
   dashboardLastLogByEmail?: string;
@@ -222,11 +259,18 @@ type SentInviteItem = {
 
 function fmtDateTime(sec?: number) {
   if (!sec) return "-";
-  return new Date(sec * 1000).toLocaleString();
+  return new Date(sec * 1000).toLocaleString("es-AR");
+}
+
+function fmtTsDateTime(value?: any) {
+  if (!value) return "-";
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("es-AR");
 }
 
 function fmtMoney(n?: number, currency?: string) {
-  return `${Number(n ?? 0).toLocaleString()} ${currency ?? ""}`.trim();
+  return `${Number(n ?? 0).toLocaleString("es-AR")} ${currency ?? ""}`.trim();
 }
 
 function toSecondsMaybe(ts: any): number {
@@ -244,7 +288,7 @@ export default function DashboardPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [feedGroups, setFeedGroups] = useState<FeedGroup[]>([]);
   const [inactive, setInactive] = useState<InactiveItem[]>([]);
   const [loadingWidgets, setLoadingWidgets] = useState(false);
 
@@ -254,8 +298,14 @@ export default function DashboardPage() {
   const [pendingTransfers, setPendingTransfers] = useState<TransferPendingItem[]>([]);
   const [loadingTransfers, setLoadingTransfers] = useState(false);
 
+  const [overdueCharges, setOverdueCharges] = useState<OverdueChargeItem[]>([]);
+  const [loadingOverdueCharges, setLoadingOverdueCharges] = useState(false);
+
   const [sentInvites, setSentInvites] = useState<SentInviteItem[]>([]);
   const [loadingSentInvites, setLoadingSentInvites] = useState(false);
+
+  const [upcomingEvents, setUpcomingEvents] = useState<CalendarEventRow[]>([]);
+  const [loadingUpcomingEvents, setLoadingUpcomingEvents] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -309,15 +359,19 @@ export default function DashboardPage() {
           ...(d.data() as any),
         })) as CaseRow[];
 
+        const myCaseIds = new Set(myCases.map((c) => c.id));
+        const caseMap = new Map(
+          myCases.map((c) => [c.id, String(c.caratulaTentativa ?? c.id)])
+        );
+
         const now = Date.now();
         const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
 
-        const feedTmp: FeedItem[] = [];
         const inactiveTmp: InactiveItem[] = [];
-
         for (const c of myCases) {
-          const lastLogAtSec = c.dashboardLastLogAt?.seconds;
+          if (c.status === "archived") continue;
 
+          const lastLogAtSec = c.dashboardLastLogAt?.seconds;
           if (!lastLogAtSec || now - lastLogAtSec * 1000 > sixtyDaysMs) {
             inactiveTmp.push({
               caseId: c.id,
@@ -325,23 +379,57 @@ export default function DashboardPage() {
               lastLogAtSec,
             });
           }
+        }
 
-          if (lastLogAtSec) {
-            feedTmp.push({
-              caseId: c.id,
-              caratula: String(c.caratulaTentativa ?? ""),
-              title: String(c.dashboardLastLogTitle ?? "(sin título)"),
-              createdAtSec: lastLogAtSec,
-              createdByEmail: String(c.dashboardLastLogByEmail ?? ""),
+        inactiveTmp.sort((a, b) => (a.lastLogAtSec ?? 0) - (b.lastLogAtSec ?? 0));
+        setInactive(inactiveTmp.slice(0, 30));
+
+        const logsQ = query(
+          collectionGroup(db, "logs"),
+          orderBy("createdAt", "desc"),
+          limit(150)
+        );
+        const logsSnap = await getDocs(logsQ);
+
+        const recentLogs: FeedItem[] = [];
+        for (const d of logsSnap.docs) {
+          const parentDoc = d.ref.parent.parent;
+          const caseId = parentDoc?.id ?? "";
+          if (!caseId || !myCaseIds.has(caseId)) continue;
+
+          const data = d.data() as any;
+          const createdAtSec = Number(data?.createdAt?.seconds ?? 0);
+          if (!createdAtSec) continue;
+
+          recentLogs.push({
+            caseId,
+            caratula: caseMap.get(caseId) ?? caseId,
+            title: String(data?.title ?? "(sin título)"),
+            createdAtSec,
+            createdByEmail: String(data?.createdByEmail ?? ""),
+          });
+
+          if (recentLogs.length >= 20) break;
+        }
+
+        const groupedMap = new Map<string, FeedGroup>();
+        for (const item of recentLogs) {
+          const found = groupedMap.get(item.caseId);
+          if (!found) {
+            groupedMap.set(item.caseId, {
+              caseId: item.caseId,
+              caratula: item.caratula,
+              latestSec: item.createdAtSec,
+              items: [item],
             });
+          } else {
+            found.items.push(item);
+            if (item.createdAtSec > found.latestSec) found.latestSec = item.createdAtSec;
           }
         }
 
-        feedTmp.sort((a, b) => b.createdAtSec - a.createdAtSec);
-        inactiveTmp.sort((a, b) => (a.lastLogAtSec ?? 0) - (b.lastLogAtSec ?? 0));
-
-        setFeed(feedTmp.slice(0, 20));
-        setInactive(inactiveTmp.slice(0, 30));
+        const grouped = Array.from(groupedMap.values()).sort((a, b) => b.latestSec - a.latestSec);
+        setFeedGroups(grouped);
       } catch (e: any) {
         setMsg((prev) => prev ?? (e?.message ?? "Error cargando movimientos/inactividad"));
       } finally {
@@ -444,6 +532,68 @@ export default function DashboardPage() {
   useEffect(() => {
     (async () => {
       if (!user) {
+        setOverdueCharges([]);
+        return;
+      }
+
+      setLoadingOverdueCharges(true);
+
+      try {
+        const qScheduled = query(
+          collection(db, "charges"),
+          where("visibleToUids", "array-contains", user.uid),
+          where("status", "==", "scheduled"),
+          orderBy("scheduledDate", "asc"),
+          limit(200)
+        );
+
+        const snap = await getDocs(qScheduled);
+        const nowMs = Date.now();
+
+        const items = snap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            const scheduledDate = data?.scheduledDate?.toDate
+              ? data.scheduledDate.toDate()
+              : data?.scheduledDate
+              ? new Date(data.scheduledDate)
+              : null;
+
+            const remainingAmount = getScheduledRemainingAmount(data);
+
+            return {
+              chargeId: d.id,
+              payerName: String(data?.payerRef?.displayName ?? "").trim() || "(sin pagador)",
+              caseLabel: data?.caseRef?.isExtraCase
+                ? String(data?.caseRef?.extraCaseReason ?? "").trim() || "Cobro extra-caso"
+                : String(data?.caseRef?.caratula ?? "").trim() || "(sin carátula)",
+              scheduledAtSec:
+                scheduledDate && !Number.isNaN(scheduledDate.getTime())
+                  ? Math.floor(scheduledDate.getTime() / 1000)
+                  : undefined,
+              remainingAmount,
+              currency: String(data?.currency ?? "").trim() || undefined,
+            } as OverdueChargeItem;
+          })
+          .filter((x) => {
+            if (!x.scheduledAtSec) return false;
+            return x.scheduledAtSec * 1000 < nowMs && Number(x.remainingAmount ?? 0) > 0;
+          });
+
+        items.sort((a, b) => (a.scheduledAtSec ?? 0) - (b.scheduledAtSec ?? 0));
+        setOverdueCharges(items);
+      } catch (e: any) {
+        setOverdueCharges([]);
+        setMsg((prev) => prev ?? (e?.message ?? "Error cargando alerta de morosidad"));
+      } finally {
+        setLoadingOverdueCharges(false);
+      }
+    })();
+  }, [user]);
+
+    useEffect(() => {
+    (async () => {
+      if (!user) {
         setSentInvites([]);
         return;
       }
@@ -451,17 +601,34 @@ export default function DashboardPage() {
       setLoadingSentInvites(true);
 
       try {
-        const qMyCases = query(collection(db, "cases"), where("broughtByUid", "==", user.uid));
+        const qMyCases = query(
+          collection(db, "cases"),
+          where("broughtByUid", "==", user.uid),
+          limit(100)
+        );
         const casesSnap = await getDocs(qMyCases);
+
+        const nowMs = Date.now();
+        const acceptedVisibleMs = 5 * 24 * 60 * 60 * 1000;
+        const rejectedVisibleMs = 3 * 24 * 60 * 60 * 1000;
+
+        const caseRows = casesSnap.docs.map((caseDoc) => {
+          const caseId = caseDoc.id;
+          const caseData = caseDoc.data() as any;
+          return {
+            caseId,
+            caratula: String(caseData?.caratulaTentativa ?? caseId),
+          };
+        });
+
+        const inviteSnaps = await Promise.all(
+          caseRows.map((c) => getDocs(collection(db, "cases", c.caseId, "invites")))
+        );
 
         const items: SentInviteItem[] = [];
 
-        for (const caseDoc of casesSnap.docs) {
-          const caseId = caseDoc.id;
-          const caseData = caseDoc.data() as any;
-          const caratula = String(caseData?.caratulaTentativa ?? caseId);
-
-          const invitesSnap = await getDocs(collection(db, "cases", caseId, "invites"));
+        inviteSnaps.forEach((invitesSnap, index) => {
+          const { caseId, caratula } = caseRows[index];
 
           invitesSnap.docs.forEach((d) => {
             const data = d.data() as any;
@@ -472,6 +639,16 @@ export default function DashboardPage() {
             const mode = String(data?.mode ?? "auto") as SentInviteMode;
 
             if (status !== "pending" && status !== "accepted" && status !== "rejected") return;
+
+            if (status === "accepted" && respondedAtSec) {
+              const ageMs = nowMs - respondedAtSec * 1000;
+              if (ageMs > acceptedVisibleMs) return;
+            }
+
+            if (status === "rejected" && respondedAtSec) {
+              const ageMs = nowMs - respondedAtSec * 1000;
+              if (ageMs > rejectedVisibleMs) return;
+            }
 
             items.push({
               inviteId: d.id,
@@ -486,7 +663,7 @@ export default function DashboardPage() {
               sortSec: respondedAtSec || invitedAtSec || 0,
             });
           });
-        }
+        });
 
         items.sort((a, b) => b.sortSec - a.sortSec);
         setSentInvites(items.slice(0, 20));
@@ -495,6 +672,40 @@ export default function DashboardPage() {
         setMsg((prev) => prev ?? (e?.message ?? "Error cargando estado de invitaciones enviadas"));
       } finally {
         setLoadingSentInvites(false);
+      }
+    })();
+  }, [user]);
+
+  useEffect(() => {
+    (async () => {
+      if (!user) {
+        setUpcomingEvents([]);
+        return;
+      }
+
+      setLoadingUpcomingEvents(true);
+
+      try {
+        const rows = await listUpcomingEventsForUser({
+          uid: user.uid,
+          maxResults: 50,
+        });
+
+        const now = Date.now();
+        const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+
+        const filtered = rows.filter((item) => {
+          const d = item.startAt?.toDate ? item.startAt.toDate() : new Date(item.startAt);
+          if (Number.isNaN(d.getTime())) return false;
+          return d.getTime() >= now && d.getTime() <= now + threeDaysMs;
+        });
+
+        setUpcomingEvents(filtered);
+      } catch (e: any) {
+        setUpcomingEvents([]);
+        setMsg((prev) => prev ?? (e?.message ?? "Error cargando próximos eventos"));
+      } finally {
+        setLoadingUpcomingEvents(false);
       }
     })();
   }, [user]);
@@ -550,6 +761,13 @@ export default function DashboardPage() {
         />
 
         <CardLink
+          href="/calendar"
+          title="Agenda de eventos"
+          subtitle="Vista mensual, semanal y diaria"
+          icon={<IconCalendar className="h-5 w-5" />}
+        />
+
+        <CardLink
           href="/cobranzas"
           title="Mis cobros"
           subtitle="Cobros realizados, previstos y transferencias"
@@ -591,20 +809,32 @@ export default function DashboardPage() {
           </div>
 
           <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
-            {feed.length === 0 ? (
+            {feedGroups.length === 0 ? (
               <div className="py-2 text-sm text-gray-700 dark:text-gray-200">Sin movimientos.</div>
             ) : (
-              feed.map((f, idx) => (
+              feedGroups.map((group) => (
                 <a
-                  key={idx}
-                  href={`/cases/manage/${f.caseId}`}
-                  className="block py-2 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                  key={group.caseId}
+                  href={`/cases/manage/${group.caseId}`}
+                  className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
                 >
-                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">{f.title}</div>
-                  <div className="text-xs text-gray-600 dark:text-gray-300">
-                    {f.caratula ? `${f.caratula} · ` : ""}
-                    {fmtDateTime(f.createdAtSec)}
-                    {f.createdByEmail ? ` · ${f.createdByEmail}` : ""}
+                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                    {group.caratula || group.caseId}
+                  </div>
+
+                  <div className="mt-1 grid gap-1">
+                    {group.items.slice(0, 3).map((item, idx) => (
+                      <div key={`${group.caseId}-${idx}`} className="text-xs text-gray-600 dark:text-gray-300">
+                        {item.title} · {fmtDateTime(item.createdAtSec)}
+                        {item.createdByEmail ? ` · ${item.createdByEmail}` : ""}
+                      </div>
+                    ))}
+
+                    {group.items.length > 3 ? (
+                      <div className="text-xs font-bold text-gray-500 dark:text-gray-400">
+                        +{group.items.length - 3} movimiento(s) más
+                      </div>
+                    ) : null}
                   </div>
                 </a>
               ))
@@ -638,7 +868,7 @@ export default function DashboardPage() {
                   <div className="text-xs text-gray-600 dark:text-gray-300">
                     Último movimiento:{" "}
                     {c.lastLogAtSec
-                      ? new Date(c.lastLogAtSec * 1000).toLocaleDateString()
+                      ? new Date(c.lastLogAtSec * 1000).toLocaleDateString("es-AR")
                       : "nunca"}
                   </div>
                 </a>
@@ -762,6 +992,109 @@ export default function DashboardPage() {
                 <div className="mt-1 text-xs font-bold text-gray-700 dark:text-gray-200">
                   {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} · Mi neto:{" "}
                   {fmtMoney(item.myNetAmount, item.currency)}
+                </div>
+              </a>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-red-200 bg-white p-4 shadow-sm dark:border-red-900 dark:bg-gray-900">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Alerta morosidad
+          </div>
+          {loadingOverdueCharges ? (
+            <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
+          ) : (
+            <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+              {overdueCharges.length} vencido(s)
+            </div>
+          )}
+        </div>
+
+        <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+          Cobros agendados vencidos cuyo pago todavía no fue registrado.
+        </div>
+
+        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+          {!loadingOverdueCharges && overdueCharges.length === 0 ? (
+            <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+              No hay alertas de morosidad.
+            </div>
+          ) : (
+            overdueCharges.map((item) => (
+              <a
+                key={item.chargeId}
+                href={`/cobranzas/registrar?scheduledId=${item.chargeId}`}
+                className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+              >
+                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                  {item.caseLabel}
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-300">
+                  {item.payerName} · Vencía: {item.scheduledAtSec ? fmtDateTime(item.scheduledAtSec) : "-"}
+                </div>
+                <div className="mt-1 text-xs font-bold text-red-700 dark:text-red-300">
+                  Saldo pendiente: {fmtMoney(item.remainingAmount, item.currency)}
+                </div>
+              </a>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Próximos eventos
+          </div>
+          {loadingUpcomingEvents ? (
+            <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
+          ) : (
+            <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+              próximos 3 días · {upcomingEvents.length} visible(s)
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+          {!loadingUpcomingEvents && upcomingEvents.length === 0 ? (
+            <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+              No tenés eventos próximos para los próximos 3 días.
+            </div>
+          ) : (
+            upcomingEvents.map((item) => (
+              <a
+                key={item.id}
+                href="/calendar"
+                className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+              >
+                <div className="flex items-start gap-3">
+                  <div
+                    className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                    style={{ backgroundColor: item.color || "#3b82f6" }}
+                  />
+
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                      {item.title}
+                    </div>
+                    <div className="text-xs text-gray-600 dark:text-gray-300">
+                      {fmtTsDateTime(item.startAt)}
+                      {item.caseRef?.caratula ? ` · ${item.caseRef.caratula}` : ""}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                      {item.source === "manual" ? "Manual" : "Automático"} ·{" "}
+                      {item.visibility === "global"
+                        ? "Global"
+                        : item.visibility === "private"
+                        ? "Privado"
+                        : item.visibility === "selected_users"
+                        ? "Usuarios seleccionados"
+                        : "Compartido con causa"}
+                    </div>
+                  </div>
                 </div>
               </a>
             ))

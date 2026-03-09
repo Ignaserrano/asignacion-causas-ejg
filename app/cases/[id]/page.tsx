@@ -294,7 +294,6 @@ export default function CaseDetailPage() {
       pendingInvites={pendingInvites}
       onLogout={doLogout}
     >
-      {/* Estilos de impresión */}
       <style jsx global>{`
         @media print {
           .no-print {
@@ -310,7 +309,6 @@ export default function CaseDetailPage() {
         }
       `}</style>
 
-      {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs text-gray-600 dark:text-gray-300">Causa</div>
@@ -318,8 +316,14 @@ export default function CaseDetailPage() {
           <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">#{caseId}</div>
         </div>
 
-        {/* Botonera */}
         <div className="no-print flex flex-wrap items-center gap-2">
+          <Link
+            href={`/cases/manage/${caseId}`}
+            className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
+          >
+            Gestionar
+          </Link>
+
           <button
             onClick={copyLink}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
@@ -373,7 +377,6 @@ export default function CaseDetailPage() {
 
       {!loading && c ? (
         <>
-          {/* Banner estado */}
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -402,7 +405,6 @@ export default function CaseDetailPage() {
             </div>
           </div>
 
-          {/* Datos */}
           <SectionTitle>Datos</SectionTitle>
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="grid gap-3 text-sm">
@@ -431,12 +433,9 @@ export default function CaseDetailPage() {
                 <span className="font-black">Resumen:</span>{" "}
                 <span className="text-gray-800 dark:text-gray-100">{c.resumen ?? "-"}</span>
               </div>
-
-              
             </div>
           </div>
 
-          {/* Confirmados */}
           <SectionTitle>
             Confirmados ({confirmedCount}/{required})
           </SectionTitle>
@@ -454,7 +453,6 @@ export default function CaseDetailPage() {
             )}
           </div>
 
-          {/* Invitaciones */}
           <SectionTitle>Invitaciones</SectionTitle>
           <div className="grid gap-3">
             {invites.length === 0 ? (

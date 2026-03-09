@@ -1,0 +1,1228 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { onAuthStateChanged, signOut, User } from "firebase/auth";
+import {
+  collection,
+  collectionGroup,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
+
+import { auth, db } from "@/lib/firebase";
+import AppShell from "@/components/AppShell";
+import {
+  CalendarEventRow,
+  createCalendarEvent,
+  type EventVisibility,
+} from "@/lib/events";
+
+type MainCaseRow = {
+  id: string;
+  caratulaTentativa?: string;
+  confirmedAssigneesUids?: string[];
+};
+
+type UserOption = {
+  uid: string;
+  email: string;
+};
+
+type CalendarViewMode = "month" | "week" | "day";
+
+function safeText(v: any) {
+  return String(v ?? "").trim();
+}
+
+function fmtDateTime(value?: any) {
+  if (!value) return "-";
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("es-AR", {
+    hour12: false,
+  });
+}
+
+function fmtHour(value?: any) {
+  if (!value) return "-";
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleTimeString("es-AR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function fmtDateLabel(date: Date) {
+  return date.toLocaleDateString("es-AR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+function fmtDateTimeInput(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}:${pad(d.getMinutes())}`;
+}
+
+function colorLabel(hex: string) {
+  switch (hex) {
+    case "#ef4444":
+      return "Rojo";
+    case "#f59e0b":
+      return "Naranja";
+    case "#10b981":
+      return "Verde";
+    case "#3b82f6":
+      return "Azul";
+    case "#8b5cf6":
+      return "Violeta";
+    case "#ec4899":
+      return "Rosa";
+    case "#6b7280":
+      return "Gris";
+    default:
+      return hex;
+  }
+}
+
+function toDate(value?: any) {
+  if (!value) return null;
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function startOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+function endOfDay(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+
+function startOfWeek(d: Date) {
+  const copy = startOfDay(d);
+  const day = copy.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  copy.setDate(copy.getDate() + diff);
+  return copy;
+}
+
+function endOfWeek(d: Date) {
+  const start = startOfWeek(d);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return endOfDay(end);
+}
+
+function startOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+}
+
+function endOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function isSameDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function addDays(base: Date, days: number) {
+  const d = new Date(base);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function getMonthGridDates(anchor: Date) {
+  const monthStart = startOfMonth(anchor);
+  const monthEnd = endOfMonth(anchor);
+
+  const gridStart = startOfWeek(monthStart);
+  const gridEnd = endOfWeek(monthEnd);
+
+  const dates: Date[] = [];
+  let cursor = new Date(gridStart);
+
+  while (cursor <= gridEnd) {
+    dates.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
+  }
+
+  return dates;
+}
+
+function eventStartsInRange(row: CalendarEventRow, rangeStart: Date, rangeEnd: Date) {
+  const start = toDate(row.startAt);
+  if (!start) return false;
+  return start >= rangeStart && start <= rangeEnd;
+}
+
+function eventBelongsToDay(row: CalendarEventRow, day: Date) {
+  const start = toDate(row.startAt);
+  if (!start) return false;
+  return isSameDay(start, day);
+}
+
+function getViewTitle(viewMode: CalendarViewMode, currentDate: Date) {
+  if (viewMode === "month") {
+    return currentDate.toLocaleDateString("es-AR", {
+      month: "long",
+      year: "numeric",
+    });
+  }
+
+  if (viewMode === "week") {
+    const weekStart = startOfWeek(currentDate);
+    const weekEnd = endOfWeek(currentDate);
+    return `${weekStart.toLocaleDateString("es-AR")} – ${weekEnd.toLocaleDateString("es-AR")}`;
+  }
+
+  return currentDate.toLocaleDateString("es-AR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function sourceLabel(row: CalendarEventRow) {
+  if (row.source === "manual") return "Manual";
+  if (row.source === "case_log") return "Bitácora";
+  if (row.source === "charge") return "Cobros";
+  return "Automático";
+}
+
+function visibilityLabel(row: CalendarEventRow) {
+  if (row.caseRef?.caratula) return `Causa: ${row.caseRef.caratula}`;
+  if (row.visibility === "global") return "Evento global";
+  if (row.visibility === "private") return "Privado";
+  if (row.visibility === "selected_users") return "Compartido con usuarios";
+  return "Compartido con causa";
+}
+
+async function loadAllVisibleEventsForUser(uid: string): Promise<CalendarEventRow[]> {
+  const qPersonal = query(
+    collection(db, "events"),
+    where("visibleToUids", "array-contains", uid),
+    where("status", "==", "active"),
+    orderBy("startAt", "asc"),
+    limit(500)
+  );
+
+  const qGlobal = query(
+    collection(db, "events"),
+    where("visibility", "==", "global"),
+    where("status", "==", "active"),
+    orderBy("startAt", "asc"),
+    limit(500)
+  );
+
+  const [personalSnap, globalSnap] = await Promise.all([getDocs(qPersonal), getDocs(qGlobal)]);
+
+  const map = new Map<string, CalendarEventRow>();
+
+  [...personalSnap.docs, ...globalSnap.docs].forEach((d) => {
+    map.set(d.id, { id: d.id, ...(d.data() as any) });
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    const aa = a.startAt?.toDate ? a.startAt.toDate().getTime() : new Date(a.startAt).getTime();
+    const bb = b.startAt?.toDate ? b.startAt.toDate().getTime() : new Date(b.startAt).getTime();
+    return aa - bb;
+  });
+}
+
+function Modal({
+  open,
+  title,
+  children,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            Cerrar
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function EventPill({
+  row,
+  onClick,
+}: {
+  row: CalendarEventRow;
+  onClick: (row: CalendarEventRow) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(row)}
+      className="block w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2 py-1 text-left text-xs shadow-sm transition hover:opacity-90"
+      style={{
+        borderColor: `${row.color || "#3b82f6"}55`,
+        backgroundColor: `${row.color || "#3b82f6"}18`,
+      }}
+      title={`${row.title} · ${fmtDateTime(row.startAt)}`}
+    >
+      <div className="truncate font-black text-gray-900 dark:text-gray-100">{row.title}</div>
+      <div className="truncate text-[11px] text-gray-700 dark:text-gray-300">
+        {fmtHour(row.startAt)}
+      </div>
+    </button>
+  );
+}
+
+export default function CalendarPage() {
+  const router = useRouter();
+
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<string>("lawyer");
+  const [pendingInvites, setPendingInvites] = useState<number>(0);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const [cases, setCases] = useState<MainCaseRow[]>([]);
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [rows, setRows] = useState<CalendarEventRow[]>([]);
+
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [startAtInput, setStartAtInput] = useState(fmtDateTimeInput(new Date()));
+  const [endAtInput, setEndAtInput] = useState("");
+  const [allDay, setAllDay] = useState(false);
+  const [color, setColor] = useState("#3b82f6");
+  const [visibility, setVisibility] = useState<EventVisibility>("private");
+  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [selectedUserUids, setSelectedUserUids] = useState<string[]>([]);
+  const [location, setLocation] = useState("");
+  const [meetingUrl, setMeetingUrl] = useState("");
+
+  const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
+  const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        router.replace("/login");
+        return;
+      }
+
+      setUser(u);
+      setLoading(true);
+      setMsg(null);
+
+      try {
+        const userSnap = await getDoc(doc(db, "users", u.uid));
+        const data = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(data?.role ?? "lawyer"));
+
+        const qPending = query(
+          collectionGroup(db, "invites"),
+          where("invitedUid", "==", u.uid),
+          where("status", "==", "pending")
+        );
+        const pendingSnap = await getDocs(qPending);
+        setPendingInvites(pendingSnap.size);
+
+        const qCases = query(
+          collection(db, "cases"),
+          where("confirmedAssigneesUids", "array-contains", u.uid),
+          limit(300)
+        );
+        const casesSnap = await getDocs(qCases);
+        const myCases = casesSnap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        })) as MainCaseRow[];
+        myCases.sort((a, b) =>
+          safeText(a.caratulaTentativa).localeCompare(safeText(b.caratulaTentativa), "es")
+        );
+        setCases(myCases);
+
+        const qUsers = query(collection(db, "users"), orderBy("email", "asc"));
+        const usersSnap = await getDocs(qUsers);
+        const userOptions = usersSnap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            return {
+              uid: d.id,
+              email: safeText(data?.email),
+            };
+          })
+          .filter((x) => Boolean(x.email));
+        setUsers(userOptions);
+
+        const allEvents = await loadAllVisibleEventsForUser(u.uid);
+        setRows(allEvents);
+      } catch (e: any) {
+        setMsg(e?.message ?? "Error cargando agenda");
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    return () => unsub();
+  }, [router]);
+
+  const selectedCase = useMemo(
+    () => cases.find((c) => c.id === selectedCaseId) ?? null,
+    [cases, selectedCaseId]
+  );
+
+  const visibleRows = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const aa = a.startAt?.toDate ? a.startAt.toDate().getTime() : new Date(a.startAt).getTime();
+      const bb = b.startAt?.toDate ? b.startAt.toDate().getTime() : new Date(b.startAt).getTime();
+      return aa - bb;
+    });
+  }, [rows]);
+
+  const upcomingRows = useMemo(() => {
+    const now = Date.now();
+
+    return visibleRows.filter((row) => {
+      const start = row.startAt?.toDate ? row.startAt.toDate() : new Date(row.startAt);
+      return !Number.isNaN(start.getTime()) && start.getTime() >= now;
+    });
+  }, [visibleRows]);
+
+  const monthDates = useMemo(() => getMonthGridDates(currentDate), [currentDate]);
+
+  const weekDates = useMemo(() => {
+    const start = startOfWeek(currentDate);
+    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  }, [currentDate]);
+
+  const monthEventsMap = useMemo(() => {
+    const map: Record<string, CalendarEventRow[]> = {};
+
+    for (const day of monthDates) {
+      const key = day.toISOString().slice(0, 10);
+      map[key] = visibleRows.filter((row) => eventBelongsToDay(row, day));
+    }
+
+    return map;
+  }, [monthDates, visibleRows]);
+
+  const weekEventsMap = useMemo(() => {
+    const map: Record<string, CalendarEventRow[]> = {};
+
+    for (const day of weekDates) {
+      const key = day.toISOString().slice(0, 10);
+      map[key] = visibleRows.filter((row) => eventBelongsToDay(row, day));
+    }
+
+    return map;
+  }, [weekDates, visibleRows]);
+
+  const dayEvents = useMemo(() => {
+    const start = startOfDay(currentDate);
+    const end = endOfDay(currentDate);
+    return visibleRows.filter((row) => eventStartsInRange(row, start, end));
+  }, [visibleRows, currentDate]);
+
+  function toggleSelectedUser(uid: string) {
+    setSelectedUserUids((prev) =>
+      prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
+    );
+  }
+
+  async function reloadEvents(uid: string) {
+    const allEvents = await loadAllVisibleEventsForUser(uid);
+    setRows(allEvents);
+  }
+
+  async function saveEvent() {
+    if (!user) return;
+
+    if (!safeText(title)) {
+      alert("Ingresá un título.");
+      return;
+    }
+
+    const startAt = new Date(startAtInput);
+    if (Number.isNaN(startAt.getTime())) {
+      alert("Ingresá una fecha de inicio válida.");
+      return;
+    }
+
+    const endAt = endAtInput ? new Date(endAtInput) : undefined;
+    if (endAtInput && endAt && Number.isNaN(endAt.getTime())) {
+      alert("Ingresá una fecha de fin válida.");
+      return;
+    }
+
+    if (endAt && endAt.getTime() < startAt.getTime()) {
+      alert("La fecha de fin no puede ser anterior al inicio.");
+      return;
+    }
+
+    if (visibility === "case_shared" && !selectedCaseId) {
+      alert("Seleccioná una causa para compartir el evento.");
+      return;
+    }
+
+    if (visibility === "selected_users" && selectedUserUids.length === 0) {
+      alert("Seleccioná al menos un usuario.");
+      return;
+    }
+
+    if (visibility === "global" && role !== "admin") {
+      alert("Solo el administrador puede crear eventos globales.");
+      return;
+    }
+
+    setSaving(true);
+    setMsg(null);
+
+    try {
+      await createCalendarEvent({
+        title: safeText(title),
+        description: safeText(description),
+        startAt,
+        endAt,
+        allDay,
+        color,
+        visibility,
+        ownerUid: user.uid,
+        ownerEmail: user.email ?? "",
+        selectedUserUids,
+        caseParticipantUids: selectedCase?.confirmedAssigneesUids ?? [],
+        caseRef:
+          visibility === "case_shared"
+            ? {
+                caseId: selectedCase?.id ?? null,
+                caratula: safeText(selectedCase?.caratulaTentativa),
+              }
+            : undefined,
+        source: "manual",
+        location: safeText(location),
+        meetingUrl: safeText(meetingUrl),
+      });
+
+      setTitle("");
+      setDescription("");
+      setStartAtInput(fmtDateTimeInput(new Date()));
+      setEndAtInput("");
+      setAllDay(false);
+      setColor("#3b82f6");
+      setVisibility("private");
+      setSelectedCaseId("");
+      setSelectedUserUids([]);
+      setLocation("");
+      setMeetingUrl("");
+
+      await reloadEvents(user.uid);
+      setMsg("✅ Evento guardado correctamente.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "No se pudo guardar el evento.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function goToday() {
+    setCurrentDate(new Date());
+  }
+
+  function goPrev() {
+    setCurrentDate((prev) => {
+      const d = new Date(prev);
+      if (viewMode === "month") d.setMonth(d.getMonth() - 1);
+      else if (viewMode === "week") d.setDate(d.getDate() - 7);
+      else d.setDate(d.getDate() - 1);
+      return d;
+    });
+  }
+
+  function goNext() {
+    setCurrentDate((prev) => {
+      const d = new Date(prev);
+      if (viewMode === "month") d.setMonth(d.getMonth() + 1);
+      else if (viewMode === "week") d.setDate(d.getDate() + 7);
+      else d.setDate(d.getDate() + 1);
+      return d;
+    });
+  }
+
+  function openEventDetail(row: CalendarEventRow) {
+    setSelectedEvent(row);
+  }
+
+  async function doLogout() {
+    await signOut(auth);
+    router.replace("/login");
+  }
+
+  return (
+    <AppShell
+      title="Agenda"
+      userEmail={user?.email ?? null}
+      role={role}
+      pendingInvites={pendingInvites}
+      onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Agenda" },
+      ]}
+    >
+      {msg ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          {msg}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          Cargando...
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">Nuevo evento</div>
+
+          <div className="mt-4 grid gap-3">
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Título</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              />
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Descripción
+              </span>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="min-h-[90px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              />
+            </label>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Inicio</span>
+                <input
+                  type="datetime-local"
+                  value={startAtInput}
+                  onChange={(e) => setStartAtInput(e.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                />
+              </label>
+
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Fin (opcional)
+                </span>
+                <input
+                  type="datetime-local"
+                  value={endAtInput}
+                  onChange={(e) => setEndAtInput(e.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                />
+              </label>
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-sm font-extrabold text-gray-900 dark:text-gray-100">
+              <input
+                type="checkbox"
+                checked={allDay}
+                onChange={(e) => setAllDay(e.target.checked)}
+              />
+              Evento de todo el día
+            </label>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Color</span>
+                <select
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <option value="#ef4444">Rojo</option>
+                  <option value="#f59e0b">Naranja</option>
+                  <option value="#10b981">Verde</option>
+                  <option value="#3b82f6">Azul</option>
+                  <option value="#8b5cf6">Violeta</option>
+                  <option value="#ec4899">Rosa</option>
+                  <option value="#6b7280">Gris</option>
+                </select>
+              </label>
+
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Visibilidad
+                </span>
+                <select
+                  value={visibility}
+                  onChange={(e) => setVisibility(e.target.value as EventVisibility)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <option value="private">Solo para mí</option>
+                  <option value="case_shared">Compartido con causa</option>
+                  <option value="selected_users">Usuarios seleccionados</option>
+                  {role === "admin" ? <option value="global">Todos los usuarios</option> : null}
+                </select>
+              </label>
+            </div>
+
+            {visibility === "case_shared" ? (
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">Causa</span>
+                <select
+                  value={selectedCaseId}
+                  onChange={(e) => setSelectedCaseId(e.target.value)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <option value="">Seleccionar causa…</option>
+                  {cases.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {safeText(c.caratulaTentativa) || c.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {visibility === "selected_users" ? (
+              <div className="grid gap-2">
+                <div className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Elegir usuarios
+                </div>
+
+                <div className="max-h-[200px] overflow-auto rounded-xl border border-gray-200 p-3 dark:border-gray-800">
+                  {users
+                    .filter((u) => u.uid !== user?.uid)
+                    .map((u) => (
+                      <label
+                        key={u.uid}
+                        className="flex items-center gap-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedUserUids.includes(u.uid)}
+                          onChange={() => toggleSelectedUser(u.uid)}
+                        />
+                        <span>{u.email}</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            ) : null}
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Ubicación (opcional)
+              </span>
+              <input
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              />
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Enlace (opcional)
+              </span>
+              <input
+                value={meetingUrl}
+                onChange={(e) => setMeetingUrl(e.target.value)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+              />
+            </label>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={saveEvent}
+                disabled={saving}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {saving ? "Guardando..." : "Guardar evento"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-4">
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                Vista de agenda
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={goPrev}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  ←
+                </button>
+
+                <button
+                  type="button"
+                  onClick={goToday}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  Hoy
+                </button>
+
+                <button
+                  type="button"
+                  onClick={goNext}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  →
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-lg font-black capitalize text-gray-900 dark:text-gray-100">
+                {getViewTitle(viewMode, currentDate)}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("month")}
+                  className={`rounded-xl px-3 py-2 text-sm font-extrabold ${
+                    viewMode === "month"
+                      ? "bg-black text-white"
+                      : "border border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  Mes
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setViewMode("week")}
+                  className={`rounded-xl px-3 py-2 text-sm font-extrabold ${
+                    viewMode === "week"
+                      ? "bg-black text-white"
+                      : "border border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  Semana
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setViewMode("day")}
+                  className={`rounded-xl px-3 py-2 text-sm font-extrabold ${
+                    viewMode === "day"
+                      ? "bg-black text-white"
+                      : "border border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  Día
+                </button>
+              </div>
+            </div>
+
+            {viewMode === "month" ? (
+              <div className="mt-4">
+                <div className="grid grid-cols-7 gap-2">
+                  {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((label) => (
+                    <div
+                      key={label}
+                      className="rounded-xl bg-gray-100 px-2 py-2 text-center text-xs font-black text-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                    >
+                      {label}
+                    </div>
+                  ))}
+
+                  {monthDates.map((day) => {
+                    const key = day.toISOString().slice(0, 10);
+                    const dayEvents = monthEventsMap[key] ?? [];
+                    const isCurrentMonth = day.getMonth() === currentDate.getMonth();
+                    const isToday = isSameDay(day, new Date());
+
+                    return (
+                      <div
+                        key={key}
+                        className={`min-h-[130px] min-w-0 overflow-hidden rounded-2xl border p-2 ${
+                          isToday
+                            ? "border-black dark:border-white"
+                            : "border-gray-200 dark:border-gray-800"
+                        } ${isCurrentMonth ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/50"}`}
+                      >
+                        <div
+                          className={`mb-2 text-sm font-black ${
+                            isCurrentMonth
+                              ? "text-gray-900 dark:text-gray-100"
+                              : "text-gray-400 dark:text-gray-500"
+                          }`}
+                        >
+                          {day.getDate()}
+                        </div>
+
+                        <div className="grid min-w-0 gap-1 overflow-hidden">
+                          {dayEvents.slice(0, 3).map((row) => (
+                            <EventPill key={row.id} row={row} onClick={openEventDetail} />
+                          ))}
+
+                          {dayEvents.length > 3 ? (
+                            <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400">
+                              +{dayEvents.length - 3} más
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {viewMode === "week" ? (
+              <div className="mt-4 grid gap-3 md:grid-cols-7">
+                {weekDates.map((day) => {
+                  const key = day.toISOString().slice(0, 10);
+                  const dayEvents = weekEventsMap[key] ?? [];
+                  const isToday = isSameDay(day, new Date());
+
+                  return (
+                    <div
+                      key={key}
+                      className={`min-w-0 overflow-hidden rounded-2xl border p-3 ${
+                        isToday
+                          ? "border-black dark:border-white"
+                          : "border-gray-200 dark:border-gray-800"
+                      }`}
+                    >
+                      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                        {fmtDateLabel(day)}
+                      </div>
+
+                      <div className="mt-3 grid min-w-0 gap-2 overflow-hidden">
+                        {dayEvents.length === 0 ? (
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            Sin eventos
+                          </div>
+                        ) : (
+                          dayEvents.map((row) => (
+                            <EventPill key={row.id} row={row} onClick={openEventDetail} />
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {viewMode === "day" ? (
+              <div className="mt-4 rounded-2xl border border-gray-200 dark:border-gray-800">
+                <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                    {currentDate.toLocaleDateString("es-AR", {
+                      weekday: "long",
+                      day: "2-digit",
+                      month: "long",
+                      year: "numeric",
+                    })}
+                  </div>
+                </div>
+
+                <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {dayEvents.length === 0 ? (
+                    <div className="p-4 text-sm text-gray-700 dark:text-gray-200">
+                      No hay eventos para este día.
+                    </div>
+                  ) : (
+                    dayEvents.map((row) => (
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => openEventDetail(row)}
+                        className="w-full p-4 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div
+                            className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                            style={{ backgroundColor: row.color || "#3b82f6" }}
+                          />
+
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                              {row.title}
+                            </div>
+
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                              {fmtDateTime(row.startAt)}
+                              {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
+                            </div>
+
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                              {visibilityLabel(row)} · {sourceLabel(row)}
+                            </div>
+
+                            {safeText(row.description) ? (
+                              <div className="mt-2 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-200">
+                                {row.description}
+                              </div>
+                            ) : null}
+
+                            {safeText(row.location) ? (
+                              <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+                                Lugar: {row.location}
+                              </div>
+                            ) : null}
+
+                            {safeText(row.meetingUrl) ? (
+                              <div className="mt-2">
+                                <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
+                                  Abrir enlace
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                Próximos eventos
+              </div>
+              <div className="text-xs text-gray-600 dark:text-gray-300">
+                {upcomingRows.length} visible(s)
+              </div>
+            </div>
+
+            <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+              {upcomingRows.length === 0 ? (
+                <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+                  No hay próximos eventos.
+                </div>
+              ) : (
+                upcomingRows.slice(0, 20).map((row) => (
+                  <button
+                    key={row.id}
+                    type="button"
+                    onClick={() => openEventDetail(row)}
+                    className="block w-full py-3 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                        style={{ backgroundColor: row.color || "#3b82f6" }}
+                        title={colorLabel(row.color || "#3b82f6")}
+                      />
+
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {row.title}
+                        </div>
+
+                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                          {fmtDateTime(row.startAt)}
+                          {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
+                        </div>
+
+                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                          {visibilityLabel(row)} · {sourceLabel(row)}
+                        </div>
+
+                        {safeText(row.location) ? (
+                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                            Lugar: {row.location}
+                          </div>
+                        ) : null}
+
+                        {safeText(row.meetingUrl) ? (
+                          <div className="mt-1">
+                            <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
+                              Abrir enlace
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="mt-4">
+              <Link
+                href="/dashboard"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Volver al inicio
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Modal
+        open={!!selectedEvent}
+        title={selectedEvent?.title || "Detalle del evento"}
+        onClose={() => setSelectedEvent(null)}
+      >
+        {selectedEvent ? (
+          <div className="grid gap-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Inicio</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {fmtDateTime(selectedEvent.startAt)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Fin</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.endAt ? fmtDateTime(selectedEvent.endAt) : "-"}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Visibilidad
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {visibilityLabel(selectedEvent)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Origen</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {sourceLabel(selectedEvent)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Todo el día
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.allDay ? "Sí" : "No"}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Estado</div>
+                <div className="mt-1 text-sm font-black capitalize text-gray-900 dark:text-gray-100">
+                  {safeText(selectedEvent.status) || "-"}
+                </div>
+              </div>
+            </div>
+
+            {safeText(selectedEvent.caseRef?.caratula) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Causa</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.caseRef?.caratula}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText(selectedEvent.description) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Descripción
+                </div>
+                <div className="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-100">
+                  {selectedEvent.description}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText(selectedEvent.location) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Ubicación
+                </div>
+                <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {selectedEvent.location}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText(selectedEvent.meetingUrl) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Enlace</div>
+                <div className="mt-1">
+                  <a
+                    href={selectedEvent.meetingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-sm font-extrabold underline text-gray-700 dark:text-gray-200"
+                  >
+                    {selectedEvent.meetingUrl}
+                  </a>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+              <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                Creado por
+              </div>
+              <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {safeText(selectedEvent.createdByEmail) ||
+                  safeText(selectedEvent.ownerEmail) ||
+                  safeText(selectedEvent.ownerUid) ||
+                  "-"}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+    </AppShell>
+  );
+}
