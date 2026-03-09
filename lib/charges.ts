@@ -177,7 +177,7 @@ export function calculateDistribution(params: {
   const distributableAmount = round2(Math.max(0, baseNetAmount - studioFundAmount));
 
   const participants: ChargeParticipant[] = params.participants.map((p) => ({
-  id: (globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)),
+    id: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
     uid: p.uid,
     displayName: p.displayName,
     percent: Number(p.percent || 0),
@@ -209,10 +209,10 @@ export function getScheduledRemainingAmount(charge: Partial<ChargeDoc> | any) {
   const collected = getScheduledCollectedAmount(charge);
   return round2(Math.max(0, total - collected));
 }
+
 export function isScheduledChargeCompleted(charge: Partial<ChargeDoc> | any) {
   return getScheduledRemainingAmount(charge) <= 0;
 }
-
 
 export function getChargeUserNetAmount(
   charge: Partial<ChargeDoc> | any,
@@ -261,6 +261,7 @@ export async function createScheduledCharge(params: {
   installments?: {
     enabled: boolean;
     total?: number;
+    current?: number;
   };
 
   notes?: string;
