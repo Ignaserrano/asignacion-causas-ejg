@@ -855,7 +855,7 @@ export default function RegistrarCobroPageClient() {
 
       if (ticketCharge.caseRef?.caseId) {
         await addAutoLog({
-          caseId: ticketCharge.caseId,
+          caseId: ticketCharge.caseRef.caseId,
           uid: user.uid,
           email: user.email ?? "",
           title: "Transferencias internas realizadas",
