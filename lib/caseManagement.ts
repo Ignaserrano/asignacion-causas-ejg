@@ -27,7 +27,8 @@ export type LogType =
   | "audiencia"
   | "control_cobro"
   | "reunion_parte"
-  | "sentencia";
+  | "sentencia"
+  | "recordatorio";
 
 export type PartyRole =
   | "actor"
@@ -283,6 +284,8 @@ export function logTypeColor(type: LogType) {
       return "bg-blue-100 text-blue-900 border-blue-200";
     case "sentencia":
       return "bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200";
+    case "recordatorio":
+      return "bg-teal-100 text-teal-900 border-teal-200";
     default:
       return "bg-gray-100 text-gray-900 border-gray-200";
   }

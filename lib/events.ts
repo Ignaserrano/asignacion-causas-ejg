@@ -78,14 +78,14 @@ export type CalendarEventDoc = {
   createdByEmail?: string;
   updatedAt?: any;
   rescheduled?: boolean;
-rescheduledLabel?: string;
-reprogrammedAt?: any;
-reprogrammedByUid?: string;
-reprogrammedByEmail?: string;
-reprogrammedToEventId?: string | null;
-reprogrammedToStartAt?: any;
-reprogrammedToEndAt?: any;
-reprogrammedFromEventId?: string | null;
+  rescheduledLabel?: string;
+  reprogrammedAt?: any;
+  reprogrammedByUid?: string;
+  reprogrammedByEmail?: string;
+  reprogrammedToEventId?: string | null;
+  reprogrammedToStartAt?: any;
+  reprogrammedToEndAt?: any;
+  reprogrammedFromEventId?: string | null;
 };
 
 export type CalendarEventRow = CalendarEventDoc & {
@@ -263,6 +263,8 @@ export function getAutoEventColorForLogType(logType: LogType) {
       return "#3b82f6";
     case "sentencia":
       return "#a855f7";
+    case "recordatorio":
+      return "#14b8a6";
     case "informativa":
     default:
       return "#6b7280";

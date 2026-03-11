@@ -118,6 +118,11 @@ type UserDoc = {
   role?: string;
 };
 
+type LawyerOption = {
+  uid: string;
+  email: string;
+};
+
 type MetaDraft = Partial<ManagementMeta> & {
   caratulaTentativa?: string;
 };
@@ -258,6 +263,7 @@ const LOGTYPE_LABEL: Record<LogType, string> = {
   control_cobro: "Control de cobro",
   reunion_parte: "Reunión con parte",
   sentencia: "Sentencia",
+  recordatorio: "Recordatorio",
 };
 
 const PROVINCIA_FUEROS = [
@@ -384,6 +390,12 @@ export default function ManageCasePage() {
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
   const [metaDraft, setMetaDraft] = useState<MetaDraft>({});
+
+  const [lawyersModalOpen, setLawyersModalOpen] = useState(false);
+  const [allLawyers, setAllLawyers] = useState<LawyerOption[]>([]);
+  const [loadingLawyers, setLoadingLawyers] = useState(false);
+  const [savingLawyers, setSavingLawyers] = useState(false);
+  const [selectedAssignedUids, setSelectedAssignedUids] = useState<string[]>([]);
 
   const [newPartyRole, setNewPartyRole] = useState<PartyRole>("actor");
 
@@ -670,6 +682,103 @@ export default function ManageCasePage() {
     setMetaModalOpen(true);
   }
 
+  async function openLawyersModal() {
+  if (role !== "admin") return;
+
+  setLawyersModalOpen(true);
+  setLoadingLawyers(true);
+
+  try {
+    const currentAssigned = Array.from(
+      new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))
+    );
+
+    const snap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
+    const lawyers = snap.docs
+      .map((d) => ({
+        uid: d.id,
+        ...(d.data() as UserDoc),
+      }))
+      .filter((u) => {
+        const roleValue = String(u.role ?? "").trim();
+        return (
+          roleValue === "abogado" ||
+          roleValue === "lawyer" ||
+          roleValue === "admin" ||
+          currentAssigned.includes(u.uid)
+        );
+      })
+      .map((u) => ({
+        uid: u.uid,
+        email: String(u.email ?? "").trim(),
+      }))
+      .filter((u) => u.uid && u.email);
+
+    setAllLawyers(lawyers);
+    setSelectedAssignedUids(currentAssigned);
+  } catch (e: any) {
+    alert(e?.message ?? "No pude cargar los abogados.");
+    setAllLawyers([]);
+    setSelectedAssignedUids(Array.from(new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))));
+  } finally {
+    setLoadingLawyers(false);
+  }
+}
+  function toggleAssignedLawyer(uid: string) {
+    setSelectedAssignedUids((prev) =>
+      prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
+    );
+  }
+
+  async function saveAssignedLawyers() {
+    if (!user) return;
+    if (role !== "admin") {
+      alert("Solo el administrador puede modificar los abogados asignados.");
+      return;
+    }
+
+    const nextUids = Array.from(new Set(selectedAssignedUids.filter(Boolean)));
+    const prevUids = Array.from(new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean)));
+
+    setSavingLawyers(true);
+    try {
+      await updateDoc(doc(db, "cases", caseId), {
+        confirmedAssigneesUids: nextUids,
+      });
+
+      await updateDoc(managementMetaRef(caseId), {
+        updatedAt: serverTimestamp(),
+      });
+
+      const prevEmails = allLawyers
+        .filter((l) => prevUids.includes(l.uid))
+        .map((l) => l.email)
+        .sort((a, b) => a.localeCompare(b, "es"));
+
+      const nextEmails = allLawyers
+        .filter((l) => nextUids.includes(l.uid))
+        .map((l) => l.email)
+        .sort((a, b) => a.localeCompare(b, "es"));
+
+      await addAutoLog({
+        caseId,
+        uid: user.uid,
+        email: user.email ?? "",
+        title: "Modificación de abogados asignados",
+        body:
+          `Antes: ${prevEmails.length > 0 ? prevEmails.join(", ") : "sin abogados asignados"}\n` +
+          `Ahora: ${nextEmails.length > 0 ? nextEmails.join(", ") : "sin abogados asignados"}`,
+        type: "informativa",
+      });
+
+      setLawyersModalOpen(false);
+    } catch (e: any) {
+      alert(e?.message ?? "No pude guardar los abogados asignados.");
+    } finally {
+      setSavingLawyers(false);
+    }
+  }
+
   async function saveMeta(
     patch: Partial<ManagementMeta>,
     maybeStatusChanged?: { from?: CaseStatus; to?: CaseStatus },
@@ -892,8 +1001,21 @@ export default function ManageCasePage() {
       if (!sentResult) return alert("Para 'Sentencia' tenés que indicar resultado.");
     }
 
-    const calendarTypes: LogType[] = ["vencimiento", "control_cobro", "audiencia", "reunion_parte"];
-    const wantsCalendar = calendarTypes.includes(logType) && calendarStart;
+    const calendarTypesWithRange: LogType[] = [
+      "vencimiento",
+      "control_cobro",
+      "audiencia",
+      "reunion_parte",
+    ];
+    const singleDateTypes: LogType[] = ["recordatorio"];
+
+    const wantsCalendar =
+      (calendarTypesWithRange.includes(logType) || singleDateTypes.includes(logType)) &&
+      calendarStart;
+
+    if ((calendarTypesWithRange.includes(logType) || singleDateTypes.includes(logType)) && !calendarStart) {
+      return alert("Ingresá fecha y hora.");
+    }
 
     setSavingLog(true);
 
@@ -939,19 +1061,34 @@ export default function ManageCasePage() {
 
       if (wantsCalendar) {
         const start = new Date(calendarStart);
-        const end = calendarEnd ? new Date(calendarEnd) : new Date(start.getTime() + 60 * 60 * 1000);
+        if (Number.isNaN(start.getTime())) {
+          throw new Error("La fecha/hora ingresada no es válida.");
+        }
 
         calendarStartDate = start;
-        calendarEndDate = end;
 
-        calendarPayload = {
-          startAt: Timestamp.fromDate(start),
-          endAt: Timestamp.fromDate(end),
-          location: calendarLocation.trim(),
-          generatedTitle: buildCalendarTitle(title),
-          attendees: involvedEmails,
-          preferredCalendarName: "Trabajo",
-        };
+        if (calendarTypesWithRange.includes(logType)) {
+          const end = calendarEnd ? new Date(calendarEnd) : new Date(start.getTime() + 60 * 60 * 1000);
+          calendarEndDate = end;
+
+          calendarPayload = {
+            startAt: Timestamp.fromDate(start),
+            endAt: Timestamp.fromDate(end),
+            location: calendarLocation.trim(),
+            generatedTitle: buildCalendarTitle(title),
+            attendees: involvedEmails,
+            preferredCalendarName: "Trabajo",
+          };
+        } else {
+          calendarPayload = {
+            startAt: Timestamp.fromDate(start),
+            endAt: null,
+            location: calendarLocation.trim(),
+            generatedTitle: buildCalendarTitle(title),
+            attendees: involvedEmails,
+            preferredCalendarName: "Trabajo",
+          };
+        }
       }
 
       const logRef = await addDoc(logsColRef(caseId), {
@@ -1176,7 +1313,7 @@ export default function ManageCasePage() {
       breadcrumbs={[
         { label: "Inicio", href: "/dashboard" },
         { label: "Gestión de causas", href: "/cases/manage" },
-         { label: "Gestionar causa"},
+        { label: "Gestionar causa" },
       ]}
     >
       {msg ? (
@@ -1235,8 +1372,6 @@ export default function ManageCasePage() {
               >
                 Registrar cobro
               </Link>
-
-              
             </div>
           </div>
 
@@ -1323,11 +1458,22 @@ export default function ManageCasePage() {
                   <span className="font-black">Estado:</span>{" "}
                   <span>{STATUS_LABEL[(meta?.status ?? "preliminar") as CaseStatus] ?? "-"}</span>
                 </div>
-                <div>
-                  <span className="font-black">Abogados asignados:</span>{" "}
-                  <span>
+
+                <div className="flex flex-wrap items-start gap-2">
+                  <span className="font-black">Abogados asignados:</span>
+                  <span className="flex-1">
                     {assignedLawyerEmails.length > 0 ? assignedLawyerEmails.join(", ") : "-"}
                   </span>
+
+                  {role === "admin" ? (
+                    <button
+                      type="button"
+                      onClick={openLawyersModal}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                    >
+                      Modificar
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1543,7 +1689,14 @@ export default function ManageCasePage() {
                 <select
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logType}
-                  onChange={(e) => setLogType(e.target.value as LogType)}
+                  onChange={(e) => {
+                    const next = e.target.value as LogType;
+                    setLogType(next);
+                    setCalendarStart("");
+                    setCalendarEnd("");
+                    setCalendarEndManuallyEdited(false);
+                    setCalendarLocation("");
+                  }}
                   disabled={!canWrite}
                 >
                   {Object.keys(LOGTYPE_LABEL).map((k) => (
@@ -1576,6 +1729,7 @@ export default function ManageCasePage() {
                   value={logBody}
                   onChange={(e) => setLogBody(e.target.value)}
                   disabled={!canWrite}
+                  placeholder={logType === "recordatorio" ? "Opcional" : undefined}
                 />
               </label>
 
@@ -1617,6 +1771,36 @@ export default function ManageCasePage() {
                       onChange={(e) => setCalendarLocation(e.target.value)}
                       disabled={!canWrite}
                       placeholder="Lugar, sala, juzgado, enlace o cualquier dato útil"
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              {logType === "recordatorio" ? (
+                <>
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Fecha y hora de recordatorio
+                    </span>
+                    <input
+                      type="datetime-local"
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      value={calendarStart}
+                      onChange={(e) => setCalendarStart(e.target.value)}
+                      disabled={!canWrite}
+                    />
+                  </label>
+
+                  <label className="grid gap-1">
+                    <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                      Más datos
+                    </span>
+                    <input
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                      value={calendarLocation}
+                      onChange={(e) => setCalendarLocation(e.target.value)}
+                      disabled={!canWrite}
+                      placeholder="Lugar, enlace o cualquier dato útil"
                     />
                   </label>
                 </>
@@ -1773,7 +1957,9 @@ export default function ManageCasePage() {
                       {hasCal ? (
                         <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
                           <div>
-                            <span className="font-black">Inicio:</span>{" "}
+                            <span className="font-black">
+                              {l.type === "recordatorio" ? "Recordatorio:" : "Inicio:"}
+                            </span>{" "}
                             {formatDateTimeFromSeconds(l.calendar?.startAt?.seconds)}
                           </div>
 
@@ -2061,6 +2247,70 @@ export default function ManageCasePage() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        open={lawyersModalOpen}
+        title="Modificar abogados asignados"
+        onClose={() => setLawyersModalOpen(false)}
+      >
+        {loadingLawyers ? (
+          <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            Cargando abogados...
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            <div className="text-sm text-gray-700 dark:text-gray-200">
+              Tildá o destildá los abogados que intervienen en esta causa.
+            </div>
+
+            {allLawyers.length === 0 ? (
+              <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
+                No encontré abogados en la colección <b>users</b>.
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                {allLawyers.map((lawyer) => {
+                  const checked = selectedAssignedUids.includes(lawyer.uid);
+
+                  return (
+                    <label
+                      key={lawyer.uid}
+                      className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleAssignedLawyer(lawyer.uid)}
+                        className="h-4 w-4"
+                      />
+                      <span>{lawyer.email}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button
+                type="button"
+                onClick={saveAssignedLawyers}
+                disabled={savingLawyers}
+                className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {savingLawyers ? "Guardando..." : "Guardar abogados asignados"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLawyersModalOpen(false)}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal
