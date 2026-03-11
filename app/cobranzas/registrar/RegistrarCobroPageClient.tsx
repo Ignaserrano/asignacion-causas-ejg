@@ -20,6 +20,7 @@ import AppShell from "@/components/AppShell";
 import ContactForm, { CreatedContact } from "@/components/contacts/ContactForm";
 import { auth, db } from "@/lib/firebase";
 import { addAutoLog } from "@/lib/caseManagement";
+import { getUserProfile } from "@/lib/users";
 import {
   calculateDistribution,
   chargeDocRef,
@@ -292,6 +293,8 @@ export default function RegistrarCobroPageClient() {
   const [ticketChargeId, setTicketChargeId] = useState<string | null>(ticketId);
   const [ticketCharge, setTicketCharge] = useState<SavedChargeRow | null>(null);
 
+  const [userEmailsByUid, setUserEmailsByUid] = useState<Record<string, string>>({});
+
   const selectedCase = useMemo(
     () => myCases.find((c) => c.id === selectedCaseId) ?? null,
     [myCases, selectedCaseId]
@@ -482,6 +485,78 @@ export default function RegistrarCobroPageClient() {
       }
     })();
   }, [ticketId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadParticipantEmails() {
+      const uids = new Set<string>();
+
+      participants.forEach((p) => {
+        if (p.kind === "lawyer" && p.uid) uids.add(p.uid);
+      });
+
+      calculatedDistribution.participants.forEach((p) => {
+        if (p.kind === "lawyer" && p.uid) uids.add(p.uid);
+      });
+
+      (ticketCharge?.distribution?.participants ?? []).forEach((p) => {
+        if (p.kind === "lawyer" && p.uid) uids.add(p.uid);
+      });
+
+      const missing = Array.from(uids).filter((uid) => !userEmailsByUid[uid]);
+      if (missing.length === 0) return;
+
+      const resolvedEntries = await Promise.all(
+        missing.map(async (uid) => {
+          try {
+            const profile = await getUserProfile(uid);
+            return [uid, safeText(profile?.email) || uid] as const;
+          } catch {
+            return [uid, uid] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      setUserEmailsByUid((prev) => {
+        const next = { ...prev };
+        for (const [uid, email] of resolvedEntries) {
+          next[uid] = email;
+        }
+        return next;
+      });
+    }
+
+    loadParticipantEmails();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [participants, calculatedDistribution, ticketCharge, userEmailsByUid]);
+
+  function getParticipantLabel(p: {
+    uid?: string;
+    displayName?: string;
+    kind?: "lawyer" | "external";
+  }) {
+    if (p.kind === "lawyer" && p.uid) {
+      const fromProfile = safeText(userEmailsByUid[p.uid]);
+      if (fromProfile) return fromProfile;
+
+      const fromOptions = lawyerOptions.find((l) => l.uid === p.uid)?.email;
+      if (safeText(fromOptions)) return safeText(fromOptions);
+
+      if (safeText(p.displayName) && safeText(p.displayName) !== p.uid) {
+        return safeText(p.displayName);
+      }
+
+      return p.uid;
+    }
+
+    return safeText(p.displayName) || safeText(p.uid) || "(sin nombre)";
+  }
 
   function applyScheduledCharge(data: ScheduledChargeRow) {
     setSourceMode("scheduled");
@@ -898,9 +973,9 @@ export default function RegistrarCobroPageClient() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
-        breadcrumbs={[
+      breadcrumbs={[
         { label: "Inicio", href: "/dashboard" },
-        { label: "Registrar cobro"}
+        { label: "Registrar cobro" },
       ]}
     >
       {msg ? (
@@ -925,8 +1000,6 @@ export default function RegistrarCobroPageClient() {
             ? "Paso 3 · Distribución"
             : "Ticket"}
         </div>
-
-     
       </div>
 
       {step === "source" ? (
@@ -1369,6 +1442,7 @@ export default function RegistrarCobroPageClient() {
               {participants.map((p) => {
                 const calcParticipant =
                   calculatedDistribution.participants.find((x) => x.displayName === p.displayName && x.uid === p.uid) ??
+                  calculatedDistribution.participants.find((x) => x.uid && x.uid === p.uid) ??
                   null;
 
                 return (
@@ -1377,7 +1451,7 @@ export default function RegistrarCobroPageClient() {
                     className="grid min-w-0 grid-cols-1 gap-2 rounded-xl border border-gray-200 p-3 dark:border-gray-800 xl:grid-cols-4"
                   >
                     <input
-                      value={p.displayName}
+                      value={getParticipantLabel(p)}
                       onChange={(e) => updateParticipant(p.id, { displayName: e.target.value })}
                       disabled={p.kind === "lawyer"}
                       placeholder={p.kind === "lawyer" ? "Abogado del estudio" : "Nombre externo"}
@@ -1557,7 +1631,7 @@ export default function RegistrarCobroPageClient() {
                     className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-800"
                   >
                     <div className="break-words text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      {p.displayName}
+                      {getParticipantLabel(p)}
                     </div>
                     <div className="break-words text-sm font-black text-gray-900 dark:text-gray-100">
                       {p.percent}% · {fmtMoney(p.amount, ticketCharge.currency)}

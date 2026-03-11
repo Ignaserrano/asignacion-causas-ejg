@@ -12,7 +12,7 @@ import {
 import { db } from "@/lib/firebase";
 import { buildGoogleCalendarLink, addAutoLog } from "@/lib/caseManagement";
 
-export type ChargeStatus = "scheduled" | "paid" | "cancelled";
+export type ChargeStatus = "scheduled" | "paid" | "completed" | "cancelled";
 
 export type ChargeCurrency = "ARS" | "USD";
 
@@ -214,6 +214,14 @@ export function isScheduledChargeCompleted(charge: Partial<ChargeDoc> | any) {
   return getScheduledRemainingAmount(charge) <= 0;
 }
 
+export function isRealPaidCharge(charge: Partial<ChargeDoc> | any) {
+  return (
+    String(charge?.status ?? "") === "paid" &&
+    !!charge?.distribution &&
+    !!charge?.transferTicket
+  );
+}
+
 export function getChargeUserNetAmount(
   charge: Partial<ChargeDoc> | any,
   userUid?: string | null
@@ -412,7 +420,7 @@ export async function registerPaidCharge(params: {
         collectedAmount: newCollected,
         remainingAmount,
         partialPaymentsCount: Number(data.partialPaymentsCount ?? 0) + 1,
-        status: scheduledCompleted ? "paid" : "scheduled",
+        status: scheduledCompleted ? "completed" : "scheduled",
         ...(scheduledCompleted ? { paidAt: params.paidAt } : {}),
         updatedAt: serverTimestamp(),
       });

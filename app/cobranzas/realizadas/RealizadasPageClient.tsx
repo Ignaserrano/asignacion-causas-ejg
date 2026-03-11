@@ -17,11 +17,12 @@ import {
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
-import { getChargeUserNetAmount } from "@/lib/charges";
+import { getChargeUserNetAmount, isRealPaidCharge } from "@/lib/charges";
+import { getUserProfile } from "@/lib/users";
 
 type ChargeRow = {
   id: string;
-  status: "scheduled" | "paid" | "cancelled";
+  status: "scheduled" | "paid" | "completed" | "cancelled";
   ownerUid?: string;
   caseRef?: {
     caseId?: string | null;
@@ -141,6 +142,7 @@ export default function RealizadasPageClient() {
   const [rows, setRows] = useState<ChargeRow[]>([]);
   const [casesMap, setCasesMap] = useState<Record<string, string>>({});
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [userEmailsByUid, setUserEmailsByUid] = useState<Record<string, string>>({});
 
   const [search, setSearch] = useState("");
   const [currencyFilter, setCurrencyFilter] = useState<"all" | "ARS" | "USD">("all");
@@ -178,10 +180,12 @@ export default function RealizadasPageClient() {
         );
 
         const chargesSnap = await getDocs(qCharges);
-        const list = chargesSnap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as any),
-        })) as ChargeRow[];
+        const list = chargesSnap.docs
+          .map((d) => ({
+            id: d.id,
+            ...(d.data() as any),
+          }))
+          .filter((row) => isRealPaidCharge(row)) as ChargeRow[];
 
         setRows(list);
 
@@ -225,6 +229,52 @@ export default function RealizadasPageClient() {
     return () => unsub();
   }, [router]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadParticipantEmails() {
+      const uids = new Set<string>();
+
+      rows.forEach((row) => {
+        (row.distribution?.participants ?? []).forEach((p) => {
+          if (p.kind === "lawyer" && p.uid) {
+            uids.add(p.uid);
+          }
+        });
+      });
+
+      const missing = Array.from(uids).filter((uid) => !userEmailsByUid[uid]);
+      if (missing.length === 0) return;
+
+      const resolvedEntries = await Promise.all(
+        missing.map(async (uid) => {
+          try {
+            const profile = await getUserProfile(uid);
+            return [uid, safeText(profile?.email) || uid] as const;
+          } catch {
+            return [uid, uid] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      setUserEmailsByUid((prev) => {
+        const next = { ...prev };
+        for (const [uid, email] of resolvedEntries) {
+          next[uid] = email;
+        }
+        return next;
+      });
+    }
+
+    loadParticipantEmails();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rows, userEmailsByUid]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
@@ -235,6 +285,25 @@ export default function RealizadasPageClient() {
       ...prev,
       [id]: !prev[id],
     }));
+  }
+
+  function getParticipantLabel(p: {
+    uid?: string;
+    displayName?: string;
+    kind?: "lawyer" | "external";
+  }) {
+    if (p.kind === "lawyer" && p.uid) {
+      const email = safeText(userEmailsByUid[p.uid]);
+      if (email) return email;
+
+      if (safeText(p.displayName) && safeText(p.displayName) !== p.uid) {
+        return safeText(p.displayName);
+      }
+
+      return p.uid;
+    }
+
+    return safeText(p.displayName) || safeText(p.uid) || "(sin nombre)";
   }
 
   const visibleRows = useMemo(() => {
@@ -604,7 +673,7 @@ export default function RealizadasPageClient() {
                                     className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 px-3 py-2 text-sm dark:border-gray-700"
                                   >
                                     <div className="font-semibold text-gray-900 dark:text-gray-100">
-                                      {p.displayName}
+                                      {getParticipantLabel(p)}
                                     </div>
                                     <div className="font-black text-gray-900 dark:text-gray-100">
                                       {p.percent}% · {fmtMoney(p.amount, r.currency)}

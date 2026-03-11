@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -106,6 +106,11 @@ type SentInviteItem = {
   sortSec: number;
 };
 
+type UserOption = {
+  uid: string;
+  email: string;
+};
+
 function fmtDateTime(sec?: number) {
   if (!sec) return "-";
   return new Date(sec * 1000).toLocaleString("es-AR");
@@ -115,7 +120,7 @@ function fmtTsDateTime(value?: any) {
   if (!value) return "-";
   const d = value?.toDate ? value.toDate() : new Date(value);
   if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString("es-AR");
+  return d.toLocaleString("es-AR", { hour12: false });
 }
 
 function fmtMoney(n?: number, currency?: string) {
@@ -125,6 +130,99 @@ function fmtMoney(n?: number, currency?: string) {
 function toSecondsMaybe(ts: any): number {
   const s = ts?.seconds;
   return typeof s === "number" ? s : 0;
+}
+
+function safeText(v: any) {
+  return String(v ?? "").trim();
+}
+
+function safeLower(v: any) {
+  return safeText(v).toLowerCase();
+}
+
+function fmtHour(value?: any) {
+  if (!value) return "-";
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleTimeString("es-AR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function toDate(value?: any) {
+  if (!value) return null;
+  const d = value?.toDate ? value.toDate() : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function sourceLabel(row: CalendarEventRow) {
+  if (row.source === "manual") return "Manual";
+  if (row.source === "case_log") return "Bitácora";
+  if (row.source === "charge") return "Cobros";
+  return "Automático";
+}
+
+function getVisibleToUids(row: CalendarEventRow) {
+  return Array.isArray((row as any).visibleToUids) ? ((row as any).visibleToUids as string[]) : [];
+}
+
+function isRescheduledEvent(row: CalendarEventRow) {
+  return Boolean((row as any).rescheduled);
+}
+
+function visibilityLabel(
+  row: CalendarEventRow,
+  users: UserOption[],
+  currentUser?: User | null
+) {
+  if (row.visibility === "case_shared") return "Abogados de la causa";
+  if (row.visibility === "global") return "Todos";
+  if (row.visibility === "private") return "Solo para mí";
+
+  const visibleToUids = getVisibleToUids(row);
+  const emails = users
+    .filter((u) => visibleToUids.includes(u.uid))
+    .map((u) => u.email)
+    .filter(Boolean);
+
+  const withoutCurrentUser = emails.filter((email) => email !== safeText(currentUser?.email));
+  const unique = Array.from(new Set(withoutCurrentUser.length > 0 ? withoutCurrentUser : emails));
+
+  return unique.length > 0 ? unique.join(", ") : "Usuarios seleccionados";
+}
+
+function Modal({
+  open,
+  title,
+  children,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+          >
+            Cerrar
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -155,6 +253,13 @@ export default function DashboardPage() {
 
   const [upcomingEvents, setUpcomingEvents] = useState<CalendarEventRow[]>([]);
   const [loadingUpcomingEvents, setLoadingUpcomingEvents] = useState(false);
+
+  const [myCases, setMyCases] = useState<CaseRow[]>([]);
+  const [quickSearch, setQuickSearch] = useState("");
+  const [quickSearchFocused, setQuickSearchFocused] = useState(false);
+
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -191,6 +296,34 @@ export default function DashboardPage() {
 
   useEffect(() => {
     (async () => {
+      if (!user) {
+        setUsers([]);
+        return;
+      }
+
+      try {
+        const qUsers = query(collection(db, "users"), orderBy("email", "asc"));
+        const usersSnap = await getDocs(qUsers);
+
+        const rows = usersSnap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            return {
+              uid: d.id,
+              email: safeText(data?.email),
+            };
+          })
+          .filter((x) => Boolean(x.email));
+
+        setUsers(rows);
+      } catch {
+        setUsers([]);
+      }
+    })();
+  }, [user]);
+
+  useEffect(() => {
+    (async () => {
       if (!user) return;
 
       setLoadingWidgets(true);
@@ -203,21 +336,23 @@ export default function DashboardPage() {
         );
 
         const casesSnap = await getDocs(casesQ);
-        const myCases = casesSnap.docs.map((d) => ({
+        const loadedCases = casesSnap.docs.map((d) => ({
           id: d.id,
           ...(d.data() as any),
         })) as CaseRow[];
 
-        const myCaseIds = new Set(myCases.map((c) => c.id));
+        setMyCases(loadedCases);
+
+        const myCaseIds = new Set(loadedCases.map((c) => c.id));
         const caseMap = new Map(
-          myCases.map((c) => [c.id, String(c.caratulaTentativa ?? c.id)])
+          loadedCases.map((c) => [c.id, String(c.caratulaTentativa ?? c.id)])
         );
 
         const now = Date.now();
         const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
 
         const inactiveTmp: InactiveItem[] = [];
-        for (const c of myCases) {
+        for (const c of loadedCases) {
           if (c.status === "archived") continue;
 
           const lastLogAtSec = c.dashboardLastLogAt?.seconds;
@@ -566,6 +701,40 @@ export default function DashboardPage() {
 
   const isAdmin = role === "admin";
 
+  const quickSearchResults = useMemo(() => {
+    const term = safeLower(quickSearch);
+    if (!term) return [];
+
+    return [...myCases]
+      .filter((c) => {
+        const caratula = safeLower(c.caratulaTentativa);
+        return Boolean(caratula) && caratula.includes(term);
+      })
+      .sort((a, b) =>
+        safeText(a.caratulaTentativa).localeCompare(safeText(b.caratulaTentativa), "es")
+      )
+      .slice(0, 8);
+  }, [myCases, quickSearch]);
+
+  function openCaseFromQuickSearch(caseId: string) {
+    setQuickSearch("");
+    setQuickSearchFocused(false);
+    router.push(`/cases/manage/${caseId}`);
+  }
+
+  function handleQuickSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (quickSearchResults.length > 0) {
+        openCaseFromQuickSearch(quickSearchResults[0].id);
+      }
+    }
+
+    if (e.key === "Escape") {
+      setQuickSearchFocused(false);
+    }
+  }
+
   return (
     <AppShell
       title="Inicio"
@@ -585,6 +754,57 @@ export default function DashboardPage() {
           Cargando...
         </div>
       ) : null}
+
+      <div className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+          Buscador rápido de causas
+        </div>
+
+        <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+          Buscá por carátula dentro de las causas en las que intervenís y entrá directo a gestión.
+        </div>
+
+        <div className="relative mt-3">
+          <input
+            value={quickSearch}
+            onChange={(e) => setQuickSearch(e.target.value)}
+            onFocus={() => setQuickSearchFocused(true)}
+            onBlur={() => {
+              setTimeout(() => setQuickSearchFocused(false), 150);
+            }}
+            onKeyDown={handleQuickSearchKeyDown}
+            placeholder="Ej.: Pérez c/ Gómez s/ alimentos"
+            className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+          />
+
+          {quickSearchFocused && safeText(quickSearch) ? (
+            <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-900">
+              {quickSearchResults.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                  No hay coincidencias.
+                </div>
+              ) : (
+                quickSearchResults.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => openCaseFromQuickSearch(item.id)}
+                    className="block w-full border-b border-gray-100 px-4 py-3 text-left transition hover:bg-gray-50 last:border-b-0 dark:border-gray-800 dark:hover:bg-gray-800/40"
+                  >
+                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                      {item.caratulaTentativa || "(sin carátula)"}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                      Abrir gestión de la causa
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -853,40 +1073,49 @@ export default function DashboardPage() {
               No tenés eventos próximos para los próximos 3 días.
             </div>
           ) : (
-            upcomingEvents.map((item) => (
-              <a
-                key={item.id}
-                href="/calendar"
-                className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
-                    style={{ backgroundColor: item.color || "#3b82f6" }}
-                  />
+            upcomingEvents.map((item) => {
+              const rescheduled = isRescheduledEvent(item);
+              const dotColor = rescheduled ? "#9ca3af" : item.color || "#3b82f6";
 
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                      {item.title}
-                    </div>
-                    <div className="text-xs text-gray-600 dark:text-gray-300">
-                      {fmtTsDateTime(item.startAt)}
-                      {item.caseRef?.caratula ? ` · ${item.caseRef.caratula}` : ""}
-                    </div>
-                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                      {item.source === "manual" ? "Manual" : "Automático"} ·{" "}
-                      {item.visibility === "global"
-                        ? "Global"
-                        : item.visibility === "private"
-                        ? "Privado"
-                        : item.visibility === "selected_users"
-                        ? "Usuarios seleccionados"
-                        : "Compartido con causa"}
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setSelectedEvent(item)}
+                  className="block w-full py-3 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                      style={{ backgroundColor: dotColor }}
+                    />
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                          {item.title}
+                        </div>
+
+                        {rescheduled ? (
+                          <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                            Reprogramado
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="text-xs text-gray-600 dark:text-gray-300">
+                        {fmtTsDateTime(item.startAt)}
+                        {item.caseRef?.caratula ? ` · ${item.caseRef.caratula}` : ""}
+                      </div>
+
+                      <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                        {visibilityLabel(item, users, user)} · {sourceLabel(item)}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </a>
-            ))
+                </button>
+              );
+            })
           )}
         </div>
       </div>
@@ -961,6 +1190,138 @@ export default function DashboardPage() {
           </div>
         </>
       ) : null}
+
+      <Modal
+        open={!!selectedEvent}
+        title={selectedEvent?.title || "Detalle del evento"}
+        onClose={() => setSelectedEvent(null)}
+      >
+        {selectedEvent ? (
+          <div className="grid gap-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Inicio</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {fmtTsDateTime(selectedEvent.startAt)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Fin</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.endAt ? fmtTsDateTime(selectedEvent.endAt) : "-"}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Visible para
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {visibilityLabel(selectedEvent, users, user)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Origen</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {sourceLabel(selectedEvent)}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800 md:col-span-2">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Todo el día
+                </div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.allDay ? "Sí" : "No"}
+                </div>
+              </div>
+            </div>
+
+            {isRescheduledEvent(selectedEvent) ? (
+              <div className="rounded-xl border border-gray-300 bg-gray-100 p-3 text-sm font-bold text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                Este evento fue reprogramado.
+              </div>
+            ) : null}
+
+            {safeText(selectedEvent.caseRef?.caratula) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Causa</div>
+                <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
+                  {selectedEvent.caseRef?.caratula}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText(selectedEvent.description) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Descripción
+                </div>
+                <div className="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-100">
+                  {selectedEvent.description}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText((selectedEvent as any).location) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Ubicación
+                </div>
+                <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {(selectedEvent as any).location}
+                </div>
+              </div>
+            ) : null}
+
+            {safeText((selectedEvent as any).meetingUrl) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Enlace</div>
+                <div className="mt-1">
+                  <a
+                    href={(selectedEvent as any).meetingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-sm font-extrabold underline text-gray-700 dark:text-gray-200"
+                  >
+                    {(selectedEvent as any).meetingUrl}
+                  </a>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+              <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                Creado por
+              </div>
+              <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {safeText((selectedEvent as any).createdByEmail) ||
+                  safeText(selectedEvent.ownerEmail) ||
+                  safeText(selectedEvent.ownerUid) ||
+                  "-"}
+              </div>
+            </div>
+
+            {selectedEvent.caseRef?.caseId ? (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const caseId = String(selectedEvent.caseRef?.caseId ?? "");
+                    setSelectedEvent(null);
+                    if (caseId) router.push(`/cases/manage/${caseId}`);
+                  }}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  Abrir causa vinculada
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
     </AppShell>
   );
 }

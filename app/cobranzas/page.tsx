@@ -23,6 +23,7 @@ import {
   createScheduledCharge,
   getChargeUserNetAmount,
   getScheduledRemainingAmount,
+  isRealPaidCharge,
   type ChargeCurrency,
   type ChargeItem,
 } from "@/lib/charges";
@@ -56,7 +57,7 @@ type LawyerOption = {
 
 type ChargeRow = {
   id: string;
-  status?: "scheduled" | "paid" | "cancelled";
+  status?: "scheduled" | "paid" | "completed" | "cancelled";
   ownerUid?: string;
   visibleToUids?: string[];
   caseRef?: {
@@ -475,13 +476,15 @@ export default function CobranzasPage() {
           limit(300)
         );
         const paidSnap = await getDocs(qPaid);
-        setPaidCharges(
-          paidSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ChargeRow[]
-        );
+        const paidRows = paidSnap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as any) }))
+          .filter((row) => isRealPaidCharge(row)) as ChargeRow[];
 
-        const pendingTransfers = paidSnap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as any) }) as ChargeRow)
-          .filter((c) => c.transferTicket?.status === "pending");
+        setPaidCharges(paidRows);
+
+        const pendingTransfers = paidRows.filter(
+          (c) => c.transferTicket?.status === "pending"
+        );
 
         setPendingTransferCharges(pendingTransfers);
       } catch (e: any) {
@@ -787,7 +790,7 @@ export default function CobranzasPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
-       breadcrumbs={[
+      breadcrumbs={[
         { label: "Inicio", href: "/dashboard" },
         { label: "Mis cobros" },
       ]}
