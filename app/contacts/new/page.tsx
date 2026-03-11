@@ -61,7 +61,7 @@ export default function ContactNewPage() {
     return (
       <AppShell
         title="Nuevo contacto"
-       userEmail={user?.email ?? null}
+       userEmail={null}
         role={role}
         pendingInvites={pendingInvites}
         onLogout={doLogout}
