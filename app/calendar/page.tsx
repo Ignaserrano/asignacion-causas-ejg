@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
+  addDoc,
   collection,
   collectionGroup,
   doc,
@@ -13,6 +14,9 @@ import {
   limit,
   orderBy,
   query,
+  serverTimestamp,
+  Timestamp,
+  updateDoc,
   where,
 } from "firebase/firestore";
 
@@ -23,6 +27,7 @@ import {
   createCalendarEvent,
   type EventVisibility,
 } from "@/lib/events";
+import { addAutoLog } from "@/lib/caseManagement";
 
 type MainCaseRow = {
   id: string;
@@ -35,7 +40,7 @@ type UserOption = {
   email: string;
 };
 
-type CalendarViewMode = "month" | "week" | "day";
+type CalendarViewMode = "month" | "week" | "day" | "agenda";
 
 function safeText(v: any) {
   return String(v ?? "").trim();
@@ -91,6 +96,8 @@ function colorLabel(hex: string) {
     case "#ec4899":
       return "Rosa";
     case "#6b7280":
+      return "Gris";
+    case "#9ca3af":
       return "Gris";
     default:
       return hex;
@@ -186,7 +193,7 @@ function getViewTitle(viewMode: CalendarViewMode, currentDate: Date) {
     });
   }
 
-  if (viewMode === "week") {
+  if (viewMode === "week" || viewMode === "agenda") {
     const weekStart = startOfWeek(currentDate);
     const weekEnd = endOfWeek(currentDate);
     return `${weekStart.toLocaleDateString("es-AR")} – ${weekEnd.toLocaleDateString("es-AR")}`;
@@ -207,19 +214,45 @@ function sourceLabel(row: CalendarEventRow) {
   return "Automático";
 }
 
-function visibilityLabel(row: CalendarEventRow) {
-  if (row.caseRef?.caratula) return `Causa: ${row.caseRef.caratula}`;
-  if (row.visibility === "global") return "Evento global";
-  if (row.visibility === "private") return "Privado";
-  if (row.visibility === "selected_users") return "Compartido con usuarios";
-  return "Compartido con causa";
+function getVisibleToUids(row: CalendarEventRow) {
+  return Array.isArray((row as any).visibleToUids) ? ((row as any).visibleToUids as string[]) : [];
+}
+
+function getCaseParticipantsSnapshot(row: CalendarEventRow) {
+  return Array.isArray((row as any).caseParticipantsSnapshot)
+    ? ((row as any).caseParticipantsSnapshot as string[])
+    : [];
+}
+
+function isRescheduledEvent(row: CalendarEventRow) {
+  return Boolean((row as any).rescheduled);
+}
+
+function visibilityLabel(
+  row: CalendarEventRow,
+  users: UserOption[],
+  currentUser?: User | null
+) {
+  if (row.visibility === "case_shared") return "Abogados de la causa";
+  if (row.visibility === "global") return "Todos";
+  if (row.visibility === "private") return "Solo para mí";
+
+  const visibleToUids = getVisibleToUids(row);
+  const emails = users
+    .filter((u) => visibleToUids.includes(u.uid))
+    .map((u) => u.email)
+    .filter(Boolean);
+
+  const withoutCurrentUser = emails.filter((email) => email !== safeText(currentUser?.email));
+  const unique = Array.from(new Set(withoutCurrentUser.length > 0 ? withoutCurrentUser : emails));
+
+  return unique.length > 0 ? unique.join(", ") : "Usuarios seleccionados";
 }
 
 async function loadAllVisibleEventsForUser(uid: string): Promise<CalendarEventRow[]> {
   const qPersonal = query(
     collection(db, "events"),
     where("visibleToUids", "array-contains", uid),
-    where("status", "==", "active"),
     orderBy("startAt", "asc"),
     limit(500)
   );
@@ -227,7 +260,6 @@ async function loadAllVisibleEventsForUser(uid: string): Promise<CalendarEventRo
   const qGlobal = query(
     collection(db, "events"),
     where("visibility", "==", "global"),
-    where("status", "==", "active"),
     orderBy("startAt", "asc"),
     limit(500)
   );
@@ -286,18 +318,28 @@ function EventPill({
   row: CalendarEventRow;
   onClick: (row: CalendarEventRow) => void;
 }) {
+  const rescheduled = isRescheduledEvent(row);
+  const pillColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+
   return (
     <button
       type="button"
       onClick={() => onClick(row)}
       className="block w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2 py-1 text-left text-xs shadow-sm transition hover:opacity-90"
       style={{
-        borderColor: `${row.color || "#3b82f6"}55`,
-        backgroundColor: `${row.color || "#3b82f6"}18`,
+        borderColor: `${pillColor}55`,
+        backgroundColor: `${pillColor}18`,
       }}
       title={`${row.title} · ${fmtDateTime(row.startAt)}`}
     >
-      <div className="truncate font-black text-gray-900 dark:text-gray-100">{row.title}</div>
+      <div className="flex items-center gap-1">
+        <div className="truncate font-black text-gray-900 dark:text-gray-100">{row.title}</div>
+        {rescheduled ? (
+          <span className="shrink-0 rounded bg-gray-200 px-1 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+            Reprogramado
+          </span>
+        ) : null}
+      </div>
       <div className="truncate text-[11px] text-gray-700 dark:text-gray-300">
         {fmtHour(row.startAt)}
       </div>
@@ -335,6 +377,11 @@ export default function CalendarPage() {
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
+
+  const [reprogramModalOpen, setReprogramModalOpen] = useState(false);
+  const [reprogramStartAtInput, setReprogramStartAtInput] = useState("");
+  const [reprogramEndAtInput, setReprogramEndAtInput] = useState("");
+  const [reprogramSaving, setReprogramSaving] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -418,7 +465,11 @@ export default function CalendarPage() {
 
     return visibleRows.filter((row) => {
       const start = row.startAt?.toDate ? row.startAt.toDate() : new Date(row.startAt);
-      return !Number.isNaN(start.getTime()) && start.getTime() >= now;
+      return (
+        !Number.isNaN(start.getTime()) &&
+        start.getTime() >= now &&
+        safeText(row.status || "active") !== "cancelled"
+      );
     });
   }, [visibleRows]);
 
@@ -454,6 +505,12 @@ export default function CalendarPage() {
   const dayEvents = useMemo(() => {
     const start = startOfDay(currentDate);
     const end = endOfDay(currentDate);
+    return visibleRows.filter((row) => eventStartsInRange(row, start, end));
+  }, [visibleRows, currentDate]);
+
+  const agendaRows = useMemo(() => {
+    const start = startOfWeek(currentDate);
+    const end = endOfWeek(currentDate);
     return visibleRows.filter((row) => eventStartsInRange(row, start, end));
   }, [visibleRows, currentDate]);
 
@@ -565,7 +622,7 @@ export default function CalendarPage() {
     setCurrentDate((prev) => {
       const d = new Date(prev);
       if (viewMode === "month") d.setMonth(d.getMonth() - 1);
-      else if (viewMode === "week") d.setDate(d.getDate() - 7);
+      else if (viewMode === "week" || viewMode === "agenda") d.setDate(d.getDate() - 7);
       else d.setDate(d.getDate() - 1);
       return d;
     });
@@ -575,7 +632,7 @@ export default function CalendarPage() {
     setCurrentDate((prev) => {
       const d = new Date(prev);
       if (viewMode === "month") d.setMonth(d.getMonth() + 1);
-      else if (viewMode === "week") d.setDate(d.getDate() + 7);
+      else if (viewMode === "week" || viewMode === "agenda") d.setDate(d.getDate() + 7);
       else d.setDate(d.getDate() + 1);
       return d;
     });
@@ -583,6 +640,148 @@ export default function CalendarPage() {
 
   function openEventDetail(row: CalendarEventRow) {
     setSelectedEvent(row);
+    setReprogramModalOpen(false);
+
+    const start = toDate(row.startAt);
+    const end = toDate(row.endAt);
+
+    setReprogramStartAtInput(start ? fmtDateTimeInput(start) : "");
+    setReprogramEndAtInput(end ? fmtDateTimeInput(end) : "");
+  }
+
+  async function reprogramEvent() {
+    if (!user || !selectedEvent) return;
+
+    const originalStart = toDate(selectedEvent.startAt);
+    if (!originalStart) {
+      alert("El evento original no tiene una fecha válida.");
+      return;
+    }
+
+    const newStart = new Date(reprogramStartAtInput);
+    if (Number.isNaN(newStart.getTime())) {
+      alert("Ingresá una nueva fecha de inicio válida.");
+      return;
+    }
+
+    let newEnd: Date | undefined = undefined;
+    if (safeText(reprogramEndAtInput)) {
+      const parsedEnd = new Date(reprogramEndAtInput);
+      if (Number.isNaN(parsedEnd.getTime())) {
+        alert("Ingresá una nueva fecha de fin válida.");
+        return;
+      }
+      if (parsedEnd.getTime() < newStart.getTime()) {
+        alert("La fecha de fin no puede ser anterior al inicio.");
+        return;
+      }
+      newEnd = parsedEnd;
+    } else {
+      const originalEnd = toDate(selectedEvent.endAt);
+      if (originalEnd) {
+        const durationMs = originalEnd.getTime() - originalStart.getTime();
+        if (durationMs > 0) {
+          newEnd = new Date(newStart.getTime() + durationMs);
+        }
+      }
+    }
+
+    setReprogramSaving(true);
+    setMsg(null);
+
+    try {
+      const visibleToUids = getVisibleToUids(selectedEvent);
+      const caseParticipantsSnapshot = getCaseParticipantsSnapshot(selectedEvent);
+
+      let nextSelectedUserUids: string[] = [];
+      if (selectedEvent.visibility === "selected_users") {
+        nextSelectedUserUids = visibleToUids.filter((uid) => uid !== selectedEvent.ownerUid);
+      }
+
+      const newEventId = await createCalendarEvent({
+        title: safeText(selectedEvent.title),
+        description: safeText(selectedEvent.description),
+        startAt: newStart,
+        endAt: newEnd,
+        allDay: Boolean(selectedEvent.allDay),
+        color: safeText(selectedEvent.color) || "#3b82f6",
+        visibility: selectedEvent.visibility,
+        ownerUid: safeText(selectedEvent.ownerUid) || user.uid,
+        ownerEmail: safeText(selectedEvent.ownerEmail) || user.email || "",
+        selectedUserUids: nextSelectedUserUids,
+        caseParticipantUids:
+          selectedEvent.visibility === "case_shared" ? caseParticipantsSnapshot : [],
+        caseRef: selectedEvent.caseRef
+          ? {
+              caseId: selectedEvent.caseRef.caseId ?? null,
+              caratula: safeText(selectedEvent.caseRef.caratula),
+            }
+          : undefined,
+        source: selectedEvent.source,
+        sourceRef: (selectedEvent as any).sourceRef
+          ? {
+              logId: (selectedEvent as any).sourceRef?.logId ?? null,
+              chargeId: (selectedEvent as any).sourceRef?.chargeId ?? null,
+              scheduledChargeId: (selectedEvent as any).sourceRef?.scheduledChargeId ?? null,
+            }
+          : undefined,
+        autoGenerated: Boolean((selectedEvent as any).autoGenerated),
+        autoType: safeText((selectedEvent as any).autoType),
+        location: safeText((selectedEvent as any).location),
+        meetingUrl: safeText((selectedEvent as any).meetingUrl),
+        reminderMinutesBefore: Array.isArray((selectedEvent as any).reminderMinutesBefore)
+          ? (selectedEvent as any).reminderMinutesBefore
+          : [],
+        status: "active",
+      });
+
+      await updateDoc(doc(db, "events", selectedEvent.id), {
+        status: "cancelled",
+        color: "#9ca3af",
+        rescheduled: true,
+        rescheduledLabel: "reprogramado",
+        reprogrammedAt: serverTimestamp(),
+        reprogrammedByUid: user.uid,
+        reprogrammedByEmail: user.email ?? "",
+        reprogrammedToEventId: newEventId,
+        reprogrammedToStartAt: Timestamp.fromDate(newStart),
+        reprogrammedToEndAt: newEnd ? Timestamp.fromDate(newEnd) : null,
+        updatedAt: serverTimestamp(),
+      });
+
+      await updateDoc(doc(db, "events", newEventId), {
+        reprogrammedFromEventId: selectedEvent.id,
+        updatedAt: serverTimestamp(),
+      });
+
+      if (safeText(selectedEvent.caseRef?.caseId)) {
+        const oldStartText = fmtDateTime(selectedEvent.startAt);
+        const oldEndText = selectedEvent.endAt ? fmtDateTime(selectedEvent.endAt) : "";
+        const newStartText = newStart.toLocaleString("es-AR", { hour12: false });
+        const newEndText = newEnd ? newEnd.toLocaleString("es-AR", { hour12: false }) : "";
+
+        await addAutoLog({
+          caseId: String(selectedEvent.caseRef?.caseId),
+          uid: user.uid,
+          email: user.email ?? "",
+          type: "informativa",
+          title: `Reprogramación de evento: ${safeText(selectedEvent.title)}`,
+          body:
+            `Se reprogramó el evento "${safeText(selectedEvent.title)}".\n\n` +
+            `Fecha original: ${oldStartText}${oldEndText ? ` → ${oldEndText}` : ""}\n` +
+            `Nueva fecha: ${newStartText}${newEndText ? ` → ${newEndText}` : ""}`,
+        });
+      }
+
+      await reloadEvents(user.uid);
+      setSelectedEvent(null);
+      setReprogramModalOpen(false);
+      setMsg("✅ Evento reprogramado correctamente.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "No se pudo reprogramar el evento.");
+    } finally {
+      setReprogramSaving(false);
+    }
   }
 
   async function doLogout() {
@@ -861,6 +1060,18 @@ export default function CalendarPage() {
                 >
                   Día
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setViewMode("agenda")}
+                  className={`rounded-xl px-3 py-2 text-sm font-extrabold ${
+                    viewMode === "agenda"
+                      ? "bg-black text-white"
+                      : "border border-gray-200 bg-white text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  Agenda
+                </button>
               </div>
             </div>
 
@@ -878,7 +1089,7 @@ export default function CalendarPage() {
 
                   {monthDates.map((day) => {
                     const key = day.toISOString().slice(0, 10);
-                    const dayEvents = monthEventsMap[key] ?? [];
+                    const dayRows = monthEventsMap[key] ?? [];
                     const isCurrentMonth = day.getMonth() === currentDate.getMonth();
                     const isToday = isSameDay(day, new Date());
 
@@ -902,13 +1113,13 @@ export default function CalendarPage() {
                         </div>
 
                         <div className="grid min-w-0 gap-1 overflow-hidden">
-                          {dayEvents.slice(0, 3).map((row) => (
+                          {dayRows.slice(0, 3).map((row) => (
                             <EventPill key={row.id} row={row} onClick={openEventDetail} />
                           ))}
 
-                          {dayEvents.length > 3 ? (
+                          {dayRows.length > 3 ? (
                             <div className="text-[11px] font-bold text-gray-500 dark:text-gray-400">
-                              +{dayEvents.length - 3} más
+                              +{dayRows.length - 3} más
                             </div>
                           ) : null}
                         </div>
@@ -923,7 +1134,7 @@ export default function CalendarPage() {
               <div className="mt-4 grid gap-3 md:grid-cols-7">
                 {weekDates.map((day) => {
                   const key = day.toISOString().slice(0, 10);
-                  const dayEvents = weekEventsMap[key] ?? [];
+                  const dayRows = weekEventsMap[key] ?? [];
                   const isToday = isSameDay(day, new Date());
 
                   return (
@@ -940,12 +1151,12 @@ export default function CalendarPage() {
                       </div>
 
                       <div className="mt-3 grid min-w-0 gap-2 overflow-hidden">
-                        {dayEvents.length === 0 ? (
+                        {dayRows.length === 0 ? (
                           <div className="text-xs text-gray-500 dark:text-gray-400">
                             Sin eventos
                           </div>
                         ) : (
-                          dayEvents.map((row) => (
+                          dayRows.map((row) => (
                             <EventPill key={row.id} row={row} onClick={openEventDetail} />
                           ))
                         )}
@@ -975,57 +1186,164 @@ export default function CalendarPage() {
                       No hay eventos para este día.
                     </div>
                   ) : (
-                    dayEvents.map((row) => (
-                      <button
-                        key={row.id}
-                        type="button"
-                        onClick={() => openEventDetail(row)}
-                        className="w-full p-4 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
-                      >
-                        <div className="flex items-start gap-3">
-                          <div
-                            className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
-                            style={{ backgroundColor: row.color || "#3b82f6" }}
-                          />
+                    dayEvents.map((row) => {
+                      const rescheduled = isRescheduledEvent(row);
+                      const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
 
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                              {row.title}
-                            </div>
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          onClick={() => openEventDetail(row)}
+                          className="w-full p-4 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div
+                              className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                              style={{ backgroundColor: dotColor }}
+                            />
 
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                              {fmtDateTime(row.startAt)}
-                              {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
-                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                                  {row.title}
+                                </div>
 
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                              {visibilityLabel(row)} · {sourceLabel(row)}
-                            </div>
-
-                            {safeText(row.description) ? (
-                              <div className="mt-2 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-200">
-                                {row.description}
+                                {rescheduled ? (
+                                  <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                    Reprogramado
+                                  </span>
+                                ) : null}
                               </div>
-                            ) : null}
 
-                            {safeText(row.location) ? (
-                              <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
-                                Lugar: {row.location}
+                              <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                {fmtDateTime(row.startAt)}
+                                {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
                               </div>
-                            ) : null}
 
-                            {safeText(row.meetingUrl) ? (
-                              <div className="mt-2">
-                                <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
-                                  Abrir enlace
-                                </span>
+                              <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                {visibilityLabel(row, users, user)} · {sourceLabel(row)}
                               </div>
-                            ) : null}
+
+                              {safeText(row.description) ? (
+                                <div className="mt-2 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-200">
+                                  {row.description}
+                                </div>
+                              ) : null}
+
+                              {safeText((row as any).location) ? (
+                                <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+                                  Lugar: {(row as any).location}
+                                </div>
+                              ) : null}
+
+                              {safeText((row as any).meetingUrl) ? (
+                                <div className="mt-2">
+                                  <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
+                                    Abrir enlace
+                                  </span>
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
-                        </div>
-                      </button>
-                    ))
+                        </button>
+                      );
+                    })
                   )}
+                </div>
+              </div>
+            ) : null}
+
+            {viewMode === "agenda" ? (
+              <div className="mt-4 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-800">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800/70">
+                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                          Fecha
+                        </th>
+                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                          Hora
+                        </th>
+                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                          Evento
+                        </th>
+                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                          Visible para
+                        </th>
+                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                          Origen
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agendaRows.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="px-2 py-3 text-sm text-gray-700 dark:text-gray-200"
+                          >
+                            No hay eventos en este período.
+                          </td>
+                        </tr>
+                      ) : (
+                        agendaRows.map((row, idx) => {
+                          const rescheduled = isRescheduledEvent(row);
+                          const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+
+                          return (
+                            <tr
+                              key={row.id}
+                              className={
+                                idx % 2 === 0
+                                  ? "bg-white dark:bg-gray-900"
+                                  : "bg-gray-50/50 dark:bg-gray-800/30"
+                              }
+                            >
+                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200 whitespace-nowrap">
+                                {toDate(row.startAt)?.toLocaleDateString("es-AR") ?? "-"}
+                              </td>
+
+                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200 whitespace-nowrap">
+                                {fmtHour(row.startAt)}
+                                {row.endAt ? ` → ${fmtHour(row.endAt)}` : ""}
+                              </td>
+
+                              <td className="border-b border-gray-100 px-2 py-2 dark:border-gray-800">
+                                <button
+                                  type="button"
+                                  onClick={() => openEventDetail(row)}
+                                  className="flex w-full items-center gap-2 text-left"
+                                >
+                                  <span
+                                    className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/10"
+                                    style={{ backgroundColor: dotColor }}
+                                  />
+                                  <span className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
+                                    {row.title}
+                                  </span>
+                                  {rescheduled ? (
+                                    <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                      Reprogramado
+                                    </span>
+                                  ) : null}
+                                </button>
+                              </td>
+
+                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                                {visibilityLabel(row, users, user)}
+                              </td>
+
+                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                                {sourceLabel(row)}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             ) : null}
@@ -1047,61 +1365,65 @@ export default function CalendarPage() {
                   No hay próximos eventos.
                 </div>
               ) : (
-                upcomingRows.slice(0, 20).map((row) => (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => openEventDetail(row)}
-                    className="block w-full py-3 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
-                        style={{ backgroundColor: row.color || "#3b82f6" }}
-                        title={colorLabel(row.color || "#3b82f6")}
-                      />
+                upcomingRows.slice(0, 20).map((row) => {
+                  const rescheduled = isRescheduledEvent(row);
+                  const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
 
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                          {row.title}
-                        </div>
+                  return (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => openEventDetail(row)}
+                      className="block w-full py-3 text-left transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="mt-1 h-4 w-4 shrink-0 rounded-full border border-black/10"
+                          style={{ backgroundColor: dotColor }}
+                          title={colorLabel(dotColor)}
+                        />
 
-                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                          {fmtDateTime(row.startAt)}
-                          {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
-                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                              {row.title}
+                            </div>
 
-                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                          {visibilityLabel(row)} · {sourceLabel(row)}
-                        </div>
+                            {rescheduled ? (
+                              <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                Reprogramado
+                              </span>
+                            ) : null}
+                          </div>
 
-                        {safeText(row.location) ? (
                           <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                            Lugar: {row.location}
+                            {fmtDateTime(row.startAt)}
+                            {row.endAt ? ` → ${fmtDateTime(row.endAt)}` : ""}
                           </div>
-                        ) : null}
 
-                        {safeText(row.meetingUrl) ? (
-                          <div className="mt-1">
-                            <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
-                              Abrir enlace
-                            </span>
+                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                            {visibilityLabel(row, users, user)} · {sourceLabel(row)}
                           </div>
-                        ) : null}
+
+                          {safeText((row as any).location) ? (
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                              Lugar: {(row as any).location}
+                            </div>
+                          ) : null}
+
+                          {safeText((row as any).meetingUrl) ? (
+                            <div className="mt-1">
+                              <span className="text-xs font-extrabold underline text-gray-700 dark:text-gray-200">
+                                Abrir enlace
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                ))
+                    </button>
+                  );
+                })
               )}
-            </div>
-
-            <div className="mt-4">
-              <Link
-                href="/dashboard"
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-              >
-                Volver al inicio
-              </Link>
             </div>
           </div>
         </div>
@@ -1110,7 +1432,10 @@ export default function CalendarPage() {
       <Modal
         open={!!selectedEvent}
         title={selectedEvent?.title || "Detalle del evento"}
-        onClose={() => setSelectedEvent(null)}
+        onClose={() => {
+          setSelectedEvent(null);
+          setReprogramModalOpen(false);
+        }}
       >
         {selectedEvent ? (
           <div className="grid gap-4">
@@ -1131,10 +1456,10 @@ export default function CalendarPage() {
 
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
                 <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
-                  Visibilidad
+                  Visible para
                 </div>
                 <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
-                  {visibilityLabel(selectedEvent)}
+                  {visibilityLabel(selectedEvent, users, user)}
                 </div>
               </div>
 
@@ -1145,7 +1470,7 @@ export default function CalendarPage() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800 md:col-span-2">
                 <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
                   Todo el día
                 </div>
@@ -1153,14 +1478,13 @@ export default function CalendarPage() {
                   {selectedEvent.allDay ? "Sí" : "No"}
                 </div>
               </div>
-
-              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Estado</div>
-                <div className="mt-1 text-sm font-black capitalize text-gray-900 dark:text-gray-100">
-                  {safeText(selectedEvent.status) || "-"}
-                </div>
-              </div>
             </div>
+
+            {isRescheduledEvent(selectedEvent) ? (
+              <div className="rounded-xl border border-gray-300 bg-gray-100 p-3 text-sm font-bold text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                Este evento fue reprogramado.
+              </div>
+            ) : null}
 
             {safeText(selectedEvent.caseRef?.caratula) ? (
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
@@ -1182,28 +1506,28 @@ export default function CalendarPage() {
               </div>
             ) : null}
 
-            {safeText(selectedEvent.location) ? (
+            {safeText((selectedEvent as any).location) ? (
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
                 <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
                   Ubicación
                 </div>
                 <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  {selectedEvent.location}
+                  {(selectedEvent as any).location}
                 </div>
               </div>
             ) : null}
 
-            {safeText(selectedEvent.meetingUrl) ? (
+            {safeText((selectedEvent as any).meetingUrl) ? (
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
                 <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Enlace</div>
                 <div className="mt-1">
                   <a
-                    href={selectedEvent.meetingUrl}
+                    href={(selectedEvent as any).meetingUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="break-all text-sm font-extrabold underline text-gray-700 dark:text-gray-200"
                   >
-                    {selectedEvent.meetingUrl}
+                    {(selectedEvent as any).meetingUrl}
                   </a>
                 </div>
               </div>
@@ -1214,12 +1538,69 @@ export default function CalendarPage() {
                 Creado por
               </div>
               <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                {safeText(selectedEvent.createdByEmail) ||
+                {safeText((selectedEvent as any).createdByEmail) ||
                   safeText(selectedEvent.ownerEmail) ||
                   safeText(selectedEvent.ownerUid) ||
                   "-"}
               </div>
             </div>
+
+            {!isRescheduledEvent(selectedEvent) ? (
+              <div className="border-t border-gray-200 pt-4 dark:border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setReprogramModalOpen((v) => !v)}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  {reprogramModalOpen ? "Cancelar reprogramación" : "Reprogramar"}
+                </button>
+
+                {reprogramModalOpen ? (
+                  <div className="mt-4 grid gap-3">
+                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                      Reprogramar evento
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="grid gap-1">
+                        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                          Nuevo inicio
+                        </span>
+                        <input
+                          type="datetime-local"
+                          value={reprogramStartAtInput}
+                          onChange={(e) => setReprogramStartAtInput(e.target.value)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                          Nuevo fin
+                        </span>
+                        <input
+                          type="datetime-local"
+                          value={reprogramEndAtInput}
+                          onChange={(e) => setReprogramEndAtInput(e.target.value)}
+                          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={reprogramEvent}
+                        disabled={reprogramSaving}
+                        className="rounded-xl bg-black px-4 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+                      >
+                        {reprogramSaving ? "Reprogramando..." : "Confirmar reprogramación"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </Modal>

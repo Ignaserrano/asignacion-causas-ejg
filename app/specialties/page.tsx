@@ -104,6 +104,10 @@ export default function MySpecialtiesPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+       breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis especialidades" },
+      ]}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
@@ -141,9 +145,7 @@ export default function MySpecialtiesPage() {
         </div>
       )}
 
-      <div className="mt-6 text-xs text-gray-600 dark:text-gray-400">
-        (Más adelante podemos permitir edición si corresponde.)
-      </div>
+     
     </AppShell>
   );
 }

@@ -215,9 +215,13 @@ export default function NewCasePage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Nueva causa" },
+      ]}
     >
       <div className="mb-4">
-        <h1 className="text-xl font-black text-gray-900 dark:text-gray-100">Nueva causa</h1>
+        
         <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">
           Completá los datos para crear la causa y, si corresponde, invitar/asignar abogados.
         </div>

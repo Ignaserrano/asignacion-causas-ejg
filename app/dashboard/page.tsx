@@ -18,101 +18,8 @@ import { httpsCallable } from "firebase/functions";
 
 import { auth, db, functions } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
-import {
-  IconCases,
-  IconInvites,
-  IconNewCase,
-  IconSpecialties,
-} from "@/components/DashboardIcons";
 import { getChargeUserNetAmount, getScheduledRemainingAmount } from "@/lib/charges";
 import { listUpcomingEventsForUser, type CalendarEventRow } from "@/lib/events";
-
-function IconManage({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-5 w-5"}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M9 21h6m-8-3h10a2 2 0 0 0 2-2V8.5a2 2 0 0 0-.59-1.41l-2.5-2.5A2 2 0 0 0 14.5 4H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 11h8M8 14h6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconContacts({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-5 w-5"}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M16 3H8a2 2 0 0 0-2 2v16l2.5-1.6c.32-.2.72-.2 1.04 0L12 21l2.46-1.6c.32-.2.72-.2 1.04 0L18 21V5a2 2 0 0 0-2-2Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12 8a2 2 0 1 0 0 4a2 2 0 0 0 0-4Z"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
-      <path
-        d="M8.8 16c.7-1.3 1.9-2 3.2-2s2.5.7 3.2 2"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function IconMoney({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-5 w-5"}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" strokeWidth="2" />
-      <circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="2" />
-      <path d="M7 12h.01M17 12h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function IconCalendar({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className ?? "h-5 w-5"}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M7 3v3M17 3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 async function exportExcel() {
   const fn = httpsCallable(functions, "adminExportCasesExcel");
@@ -124,64 +31,6 @@ async function exportExcel() {
     res.data.base64;
   link.download = res.data.fileName;
   link.click();
-}
-
-function CardLink({
-  href,
-  title,
-  subtitle,
-  tag,
-  icon,
-}: {
-  href: string;
-  title: string;
-  subtitle?: string;
-  tag?: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <a
-      href={href}
-      className="group rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:shadow-md
-                 dark:border-gray-800 dark:bg-gray-900"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="text-base font-black text-gray-900 dark:text-gray-100">
-              {title}
-            </div>
-
-            {tag ? (
-              <span
-                className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-xs font-black text-gray-900
-                           dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-              >
-                {tag}
-              </span>
-            ) : null}
-          </div>
-
-          {subtitle ? (
-            <div className="mt-1 text-sm text-gray-700 dark:text-gray-200">
-              {subtitle}
-            </div>
-          ) : null}
-        </div>
-
-        {icon ? (
-          <div
-            className="shrink-0 rounded-xl border border-gray-200 bg-gray-50 p-2 text-gray-700 transition
-                       group-hover:bg-gray-100 group-hover:text-gray-900
-                       dark:border-gray-800 dark:bg-gray-800 dark:text-gray-200 dark:group-hover:bg-gray-700 dark:group-hover:text-white"
-            aria-hidden="true"
-          >
-            {icon}
-          </div>
-        ) : null}
-      </div>
-    </a>
-  );
 }
 
 type FeedItem = {
@@ -591,7 +440,7 @@ export default function DashboardPage() {
     })();
   }, [user]);
 
-    useEffect(() => {
+  useEffect(() => {
     (async () => {
       if (!user) {
         setSentInvites([]);
@@ -737,67 +586,7 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      <div className="text-sm font-black text-gray-900 dark:text-gray-100">Trabajo</div>
-      <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
-        <CardLink
-          href="/cases/mine"
-          title="Mis causas"
-          subtitle="Causas donde participo o que creé"
-          icon={<IconCases className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/cases/manage"
-          title="Gestión de causas"
-          subtitle="Bitácora, partes, estado y más"
-          icon={<IconManage className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/contacts"
-          title="Agenda de contactos"
-          subtitle="Personas, empresas, CUIT/DNI, email y teléfono"
-          icon={<IconContacts className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/calendar"
-          title="Agenda de eventos"
-          subtitle="Vista mensual, semanal y diaria"
-          icon={<IconCalendar className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/cobranzas"
-          title="Mis cobros"
-          subtitle="Cobros realizados, previstos y transferencias"
-          icon={<IconMoney className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/invites"
-          title="Mis invitaciones"
-          subtitle={pendingInvites > 0 ? `Tenés ${pendingInvites} pendientes` : "No tenés pendientes"}
-          tag={pendingInvites > 0 ? "PENDIENTES" : undefined}
-          icon={<IconInvites className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/cases/new"
-          title="Agregar nueva causa"
-          subtitle="Cargar una causa y enviar invitaciones"
-          icon={<IconNewCase className="h-5 w-5" />}
-        />
-
-        <CardLink
-          href="/specialties"
-          title="Mis especialidades"
-          subtitle="Ver tus especialidades"
-          icon={<IconSpecialties className="h-5 w-5" />}
-        />
-      </div>
-
-      <div className="mt-8 grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <div className="flex items-center justify-between gap-2">
             <div className="text-sm font-black text-gray-900 dark:text-gray-100">
@@ -1104,28 +893,24 @@ export default function DashboardPage() {
 
       {isAdmin ? (
         <>
-          <div className="mt-8 text-sm font-black text-gray-900 dark:text-gray-100">Administración</div>
-          <div className="mt-3 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
-            <CardLink
-              href="/admin/lawyers"
-              title="Administrar abogados"
-              subtitle="Crear/editar abogados, estado y especialidades"
-              tag="ADMIN"
-            />
-            <CardLink
-              href="/admin/specialties"
-              title="Administrar especialidades"
-              subtitle="Crear/editar/activar especialidades"
-              tag="ADMIN"
-            />
+          <div className="mt-8 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                  Administración
+                </div>
+                <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                  Accedé a las secciones administrativas desde la barra lateral.
+                </div>
+              </div>
 
-            <button
-              onClick={exportExcel}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-left text-sm font-extrabold shadow-sm hover:bg-gray-50
-                         dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
-            >
-              Exportar Excel de causas
-            </button>
+              <button
+                onClick={exportExcel}
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold shadow-sm hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
+              >
+                Exportar Excel de causas
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">

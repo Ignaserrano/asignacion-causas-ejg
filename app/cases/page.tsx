@@ -131,8 +131,9 @@ export default function CasesAllPage() {
   // global search mode
   const [globalRows, setGlobalRows] = useState<CaseRow[]>([]);
 
-  // total
-  const [total, setTotal] = useState<number>(0);
+  // totales
+  const [total, setTotal] = useState<number>(0); // total con filtros
+  const [totalWithoutFilters, setTotalWithoutFilters] = useState<number>(0); // total general
 
   // lookups
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
@@ -206,6 +207,17 @@ export default function CasesAllPage() {
 
     qAny = query(qAny, orderBy(orderField, orderDir));
 
+    return qAny as Query;
+  }
+
+  function buildUnfilteredTotalQuery() {
+    let qAny: any = collection(db, "cases");
+
+    if (!showArchived) {
+      qAny = query(qAny, where("status", "!=", "archived"));
+    }
+
+    qAny = query(qAny, orderBy("createdAt", "desc"));
     return qAny as Query;
   }
 
@@ -319,15 +331,19 @@ export default function CasesAllPage() {
     setMsg(null);
 
     try {
-      const qCases = buildCasesQuery(undefined, resetToFirst ? null : lastDoc);
-      const snap = await getDocs(qCases);
+      const [snap, totalDocs, totalDocsWithoutFilters] = await Promise.all([
+        getDocs(buildCasesQuery(undefined, resetToFirst ? null : lastDoc)),
+        getAllDocs(buildCasesQueryNoLimit()),
+        getAllDocs(buildUnfilteredTotalQuery()),
+      ]);
 
       const rows: CaseRow[] = snap.docs.map((d) => mapCaseDoc(d));
 
       setPageRows(rows);
       setGlobalRows([]);
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
-      setTotal(0);
+      setTotal(totalDocs.length);
+      setTotalWithoutFilters(totalDocsWithoutFilters.length);
 
       await ensureLookupsForRows(rows);
       await loadAcceptedForCases(rows.map((r) => r.id));
@@ -343,8 +359,11 @@ export default function CasesAllPage() {
     setMsg(null);
 
     try {
-      const qCases = buildCasesQueryNoLimit();
-      const docs = await getAllDocs(qCases);
+      const [docs, totalDocsWithoutFilters] = await Promise.all([
+        getAllDocs(buildCasesQueryNoLimit()),
+        getAllDocs(buildUnfilteredTotalQuery()),
+      ]);
+
       const allRows = docs.map((d) => mapCaseDoc(d));
 
       const s = safeLower(searchCaratula);
@@ -355,6 +374,7 @@ export default function CasesAllPage() {
       setPrevStack([]);
       setLastDoc(null);
       setTotal(filtered.length);
+      setTotalWithoutFilters(totalDocsWithoutFilters.length);
 
       const firstPageRows = filtered.slice(0, PAGE_SIZE);
       await ensureLookupsForRows(firstPageRows);
@@ -517,23 +537,16 @@ export default function CasesAllPage() {
 
   const showingText = useMemo(() => {
     const shown = visibleRows.length;
-
-    if (globalSearchActive) {
-      const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-      const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + shown;
-      return { shown, start, end };
-    }
-
     const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-    const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + Math.min(PAGE_SIZE, pageRows.length);
+    const end = total === 0 ? 0 : (page - 1) * PAGE_SIZE + shown;
     return { shown, start, end };
-  }, [globalSearchActive, page, pageRows.length, total, visibleRows.length]);
+  }, [page, total, visibleRows.length]);
 
   const canNext = useMemo(() => {
     if (globalSearchActive) {
       return page * PAGE_SIZE < total;
     }
-    return pageRows.length === PAGE_SIZE;
+    return pageRows.length === PAGE_SIZE && page * PAGE_SIZE < total;
   }, [globalSearchActive, page, pageRows.length, total]);
 
   const creatorEmailShown = (uid: string) => {
@@ -576,8 +589,7 @@ export default function CasesAllPage() {
     setMsg(null);
 
     try {
-      const qCases = buildCasesQuery(undefined, prevCursor);
-      const snap = await getDocs(qCases);
+      const snap = await getDocs(buildCasesQuery(undefined, prevCursor));
 
       const rows: CaseRow[] = snap.docs.map((d) => mapCaseDoc(d));
 
@@ -614,21 +626,27 @@ export default function CasesAllPage() {
         await signOut(auth);
         router.replace("/login");
       }}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis causas", href: "/cases/mine" },
+        { label: "Todas las causas" },
+      ]}
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
-          Mostrando <span className="font-bold">{showingText.shown}</span>{" "}
-          <span className="text-gray-500 dark:text-gray-400">
-            {globalSearchActive ? "(búsqueda global por carátula)" : "(sin búsqueda global)"}
-          </span>{" "}
-          · Total <span className="font-bold">{total}</span>
+          Mostrando <span className="font-bold">{showingText.shown}</span>
           {total > 0 ? (
             <>
               {" "}
               · Rango <span className="font-bold">{showingText.start}</span>–{" "}
               <span className="font-bold">{showingText.end}</span>
             </>
-          ) : null}
+          ) : null}{" "}
+          · Total (con filtros) <span className="font-bold">{total}</span> · Total sin filtros{" "}
+          <span className="font-bold">{totalWithoutFilters}</span>{" "}
+          <span className="text-gray-500 dark:text-gray-400">
+            {globalSearchActive ? "(búsqueda global por carátula)" : "(sin búsqueda global)"}
+          </span>
         </div>
       </div>
 
@@ -942,13 +960,14 @@ export default function CasesAllPage() {
                       return next;
                     });
 
-                    if (globalSearchActive) {
-                      const nextTotal = Math.max(0, total - 1);
-                      setTotal(nextTotal);
+                    const nextTotal = Math.max(0, total - 1);
+                    const nextTotalWithoutFilters = Math.max(0, totalWithoutFilters - 1);
 
-                      const maxPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
-                      if (page > maxPage) setPage(maxPage);
-                    }
+                    setTotal(nextTotal);
+                    setTotalWithoutFilters(nextTotalWithoutFilters);
+
+                    const maxPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
+                    if (page > maxPage) setPage(maxPage);
                   } catch (e: any) {
                     setMsg(e?.message ?? "Error eliminando causa");
                   } finally {

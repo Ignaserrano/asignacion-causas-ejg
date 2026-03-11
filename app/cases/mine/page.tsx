@@ -437,6 +437,10 @@ export default function MyCasesPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis causas" },
+      ]}
     >
       {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

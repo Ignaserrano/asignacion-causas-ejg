@@ -21,7 +21,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
 
 import AppShell from "@/components/AppShell";
 import ContactForm, { CreatedContact } from "@/components/contacts/ContactForm";
@@ -172,7 +172,15 @@ type CasePaidChargeRow = {
 
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
-  return new Date(seconds * 1000).toLocaleString();
+  return new Date(seconds * 1000).toLocaleString("es-AR");
+}
+
+function formatDateTimeFromSeconds(seconds?: number) {
+  if (!seconds) return "-";
+  return new Date(seconds * 1000).toLocaleString("es-AR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 
 function toDate(value?: any) {
@@ -525,10 +533,7 @@ export default function ManageCasePage() {
           new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean))
         );
         const involvedUids = Array.from(
-          new Set([
-            ...(caseDoc.confirmedAssigneesUids ?? []),
-            caseDoc.broughtByUid ?? "",
-          ].filter(Boolean))
+          new Set([...(caseDoc.confirmedAssigneesUids ?? []), caseDoc.broughtByUid ?? ""].filter(Boolean))
         );
 
         if (involvedUids.length === 0) {
@@ -839,6 +844,7 @@ export default function ManageCasePage() {
     return {
       pdfUrl,
       pdfName: file.name,
+      storagePath: path,
     };
   }
 
@@ -876,6 +882,12 @@ export default function ManageCasePage() {
 
     if (logType === "sentencia") {
       if (!sentPdf) return alert("Para 'Sentencia' tenés que subir sí o sí el PDF.");
+      if (sentPdf.type !== "application/pdf") {
+        return alert("El archivo de sentencia debe ser un PDF.");
+      }
+      if (sentPdf.size > 20 * 1024 * 1024) {
+        return alert("El PDF no puede superar los 20 MB.");
+      }
       if (!sentResumen.trim()) return alert("Para 'Sentencia' tenés que completar el resumen.");
       if (!sentResult) return alert("Para 'Sentencia' tenés que indicar resultado.");
     }
@@ -885,17 +897,25 @@ export default function ManageCasePage() {
 
     setSavingLog(true);
 
+    let uploadedSentenciaFile:
+      | {
+          pdfUrl: string;
+          pdfName: string;
+          storagePath: string;
+        }
+      | null = null;
+
     try {
       let sentenciaPayload: any = null;
 
       if (logType === "sentencia") {
-        const uploaded = await uploadSentenciaPdf(sentPdf!);
+        uploadedSentenciaFile = await uploadSentenciaPdf(sentPdf!);
 
         sentenciaPayload = {
           resumen: sentResumen.trim(),
           resultado: sentResult,
-          pdfUrl: uploaded.pdfUrl,
-          pdfName: uploaded.pdfName,
+          pdfUrl: uploadedSentenciaFile.pdfUrl,
+          pdfName: uploadedSentenciaFile.pdfName,
         };
 
         await addDoc(collection(db, "sentences"), {
@@ -908,8 +928,8 @@ export default function ManageCasePage() {
           expedienteNumber: meta?.expedienteNumber ?? "",
           resumen: sentResumen.trim(),
           resultado: sentResult,
-          pdfUrl: uploaded.pdfUrl,
-          pdfName: uploaded.pdfName,
+          pdfUrl: uploadedSentenciaFile.pdfUrl,
+          pdfName: uploadedSentenciaFile.pdfName,
         });
       }
 
@@ -988,6 +1008,14 @@ export default function ManageCasePage() {
       setSentResult("ganado");
       setLogType("informativa");
     } catch (e: any) {
+      if (uploadedSentenciaFile?.storagePath) {
+        try {
+          await deleteObject(ref(storage, uploadedSentenciaFile.storagePath));
+        } catch (cleanupError) {
+          console.error("No se pudo borrar el PDF subido tras el error:", cleanupError);
+        }
+      }
+
       console.error(e);
       alert(e?.message ?? "No se pudo guardar la entrada.");
     } finally {
@@ -1135,10 +1163,7 @@ export default function ManageCasePage() {
   }, [sortedCaseCharges]);
 
   const caseChargesMyNetTotal = useMemo(() => {
-    return sortedCaseCharges.reduce(
-      (sum, row) => sum + getChargeUserNetAmount(row, user?.uid),
-      0
-    );
+    return sortedCaseCharges.reduce((sum, row) => sum + getChargeUserNetAmount(row, user?.uid), 0);
   }, [sortedCaseCharges, user?.uid]);
 
   return (
@@ -1148,6 +1173,11 @@ export default function ManageCasePage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Gestión de causas", href: "/cases/manage" },
+         { label: "Gestionar causa"},
+      ]}
     >
       {msg ? (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
@@ -1206,12 +1236,7 @@ export default function ManageCasePage() {
                 Registrar cobro
               </Link>
 
-              <Link
-                href="/cases/manage"
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-              >
-                Volver →
-              </Link>
+              
             </div>
           </div>
 
@@ -1281,8 +1306,7 @@ export default function ManageCasePage() {
                   <span>{valueOrDash(meta?.expedienteNumber)}</span>
                 </div>
                 <div>
-                  <span className="font-black">Juzgado:</span>{" "}
-                  <span>{valueOrDash(meta?.court)}</span>
+                  <span className="font-black">Juzgado:</span> <span>{valueOrDash(meta?.court)}</span>
                 </div>
                 <div>
                   <span className="font-black">Fuero:</span> <span>{valueOrDash(meta?.fuero)}</span>
@@ -1608,7 +1632,30 @@ export default function ManageCasePage() {
                       type="file"
                       accept="application/pdf"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                      onChange={(e) => setSentPdf(e.target.files?.[0] ?? null)}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+
+                        if (!f) {
+                          setSentPdf(null);
+                          return;
+                        }
+
+                        if (f.type !== "application/pdf") {
+                          alert("Solo se permite subir archivos PDF.");
+                          e.currentTarget.value = "";
+                          setSentPdf(null);
+                          return;
+                        }
+
+                        if (f.size > 20 * 1024 * 1024) {
+                          alert("El PDF no puede superar los 20 MB.");
+                          e.currentTarget.value = "";
+                          setSentPdf(null);
+                          return;
+                        }
+
+                        setSentPdf(f);
+                      }}
                       disabled={!canWrite}
                     />
                   </label>
@@ -1722,6 +1769,28 @@ export default function ManageCasePage() {
                           </a>
                         ) : null}
                       </div>
+
+                      {hasCal ? (
+                        <div className="mt-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+                          <div>
+                            <span className="font-black">Inicio:</span>{" "}
+                            {formatDateTimeFromSeconds(l.calendar?.startAt?.seconds)}
+                          </div>
+
+                          {l.calendar?.endAt?.seconds ? (
+                            <div className="mt-1">
+                              <span className="font-black">Fin:</span>{" "}
+                              {formatDateTimeFromSeconds(l.calendar?.endAt?.seconds)}
+                            </div>
+                          ) : null}
+
+                          {String(l.calendar?.location ?? "").trim() ? (
+                            <div className="mt-1">
+                              <span className="font-black">Más datos:</span> {l.calendar?.location}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
 
                       {l.body ? (
                         <div className="mt-2 whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-100">

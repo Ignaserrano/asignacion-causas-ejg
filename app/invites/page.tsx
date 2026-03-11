@@ -367,6 +367,10 @@ export default function InvitesPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+       breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis invitaciones" },
+      ]}
     >
       {/* mini header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

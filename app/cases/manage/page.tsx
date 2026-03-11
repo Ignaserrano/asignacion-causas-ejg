@@ -515,8 +515,11 @@ export default function ManageCasesPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Gestión de causas" },
+      ]}
     >
-      {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{showingText.shown}</span>
@@ -532,7 +535,6 @@ export default function ManageCasesPage() {
         </div>
       </div>
 
-      {/* Filtros / orden */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -599,7 +601,6 @@ export default function ManageCasesPage() {
               </select>
             </label>
 
-            {/* Compartido con */}
             <label className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
               Compartido con{" "}
               <select
@@ -684,7 +685,6 @@ export default function ManageCasesPage() {
         </div>
       ) : null}
 
-      {/* Listado */}
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
           {pageRows.length === 0 ? (
@@ -694,9 +694,10 @@ export default function ManageCasesPage() {
           ) : (
             pageRows.map((r) => {
               return (
-                <div
+                <Link
                   key={r.id}
-                  className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+                  href={`/cases/manage/${r.id}`}
+                  className="block rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700 dark:hover:bg-gray-800"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-[240px] flex-1">
@@ -734,21 +735,17 @@ export default function ManageCasesPage() {
                       </div>
                     </div>
 
-                    <Link
-                      href={`/cases/manage/${r.id}`}
-                      className="shrink-0 rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
-                    >
-                      Gestionar
-                    </Link>
+                    <div className="shrink-0 text-sm font-extrabold text-gray-500 dark:text-gray-400">
+                      Abrir →
+                    </div>
                   </div>
-                </div>
+                </Link>
               );
             })
           )}
         </div>
       ) : null}
 
-      {/* Paginación */}
       {!loading && !msg ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button

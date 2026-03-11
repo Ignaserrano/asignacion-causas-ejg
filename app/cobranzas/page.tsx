@@ -787,6 +787,10 @@ export default function CobranzasPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+       breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis cobros" },
+      ]}
     >
       {msg ? (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">

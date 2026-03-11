@@ -77,6 +77,15 @@ export type CalendarEventDoc = {
   createdByUid?: string;
   createdByEmail?: string;
   updatedAt?: any;
+  rescheduled?: boolean;
+rescheduledLabel?: string;
+reprogrammedAt?: any;
+reprogrammedByUid?: string;
+reprogrammedByEmail?: string;
+reprogrammedToEventId?: string | null;
+reprogrammedToStartAt?: any;
+reprogrammedToEndAt?: any;
+reprogrammedFromEventId?: string | null;
 };
 
 export type CalendarEventRow = CalendarEventDoc & {

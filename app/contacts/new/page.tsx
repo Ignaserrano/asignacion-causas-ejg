@@ -61,10 +61,11 @@ export default function ContactNewPage() {
     return (
       <AppShell
         title="Nuevo contacto"
-        userEmail={null}
+        userEmail={user?.email ?? null}
         role={role}
         pendingInvites={pendingInvites}
         onLogout={doLogout}
+       
       >
         <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...

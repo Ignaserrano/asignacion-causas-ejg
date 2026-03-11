@@ -183,6 +183,58 @@ function IconMoney({ className }: { className?: string }) {
   );
 }
 
+function IconBook({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6 4.5A2.5 2.5 0 0 1 8.5 2H19v18H8.5A2.5 2.5 0 0 0 6 22V4.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M6 4.5A2.5 2.5 0 0 0 3.5 7V19A2.5 2.5 0 0 1 6 16.5H19"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconShield({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 3l7 3v5c0 4.5-2.8 8.6-7 10-4.2-1.4-7-5.5-7-10V6l7-3Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconUsers({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M16 21v-1a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v1"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <circle cx="10" cy="8" r="3" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M20 21v-1a4 4 0 0 0-3-3.87M15 5.13A3 3 0 0 1 15 10.9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function IconMenu({ className }: { className?: string }) {
   return (
     <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -304,6 +356,7 @@ export default function AppShell({
       { href: "/cases/new", label: "Nueva causa", icon: <IconPlusDoc className="h-4 w-4" /> },
       { href: "/cases/mine", label: "Mis causas", icon: <IconBriefcase className="h-4 w-4" /> },
       { href: "/cases/manage", label: "Gestión de causas", icon: <IconManage className="h-4 w-4" /> },
+      { href: "/jurisprudencia", label: "Jurisprudencia", icon: <IconBook className="h-4 w-4" /> },
       { href: "/contacts", label: "Agenda de contactos", icon: <IconContacts className="h-4 w-4" /> },
       {
         href: "/invites",
@@ -316,6 +369,25 @@ export default function AppShell({
       { href: "/cobranzas", label: "Cobros", icon: <IconMoney className="h-4 w-4" /> },
     ],
     [invitesCount]
+  );
+
+  const adminTabs: Tab[] = useMemo(
+    () =>
+      isAdmin
+        ? [
+            {
+              href: "/admin/lawyers",
+              label: "Administrar abogados",
+              icon: <IconUsers className="h-4 w-4" />,
+            },
+            {
+              href: "/admin/specialties",
+              label: "Administrar especialidades",
+              icon: <IconShield className="h-4 w-4" />,
+            },
+          ]
+        : [],
+    [isAdmin]
   );
 
   function isActive(href: string) {
@@ -426,6 +498,28 @@ export default function AppShell({
                 />
               ))}
             </div>
+
+            {isAdmin ? (
+              <div className="mt-5">
+                <div className="mb-2 px-1 text-xs font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                  Administración
+                </div>
+
+                <div className="grid gap-2">
+                  {adminTabs.map((t) => (
+                    <SideNavLink
+                      key={t.href}
+                      href={t.href}
+                      label={t.label}
+                      icon={t.icon}
+                      badge={t.badge}
+                      active={isActive(t.href)}
+                      onClick={() => setMenuOpen(false)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="border-t border-gray-200 px-3 py-3 dark:border-gray-800">
