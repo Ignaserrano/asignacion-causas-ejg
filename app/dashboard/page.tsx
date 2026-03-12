@@ -257,9 +257,11 @@ export default function DashboardPage() {
   const [myCases, setMyCases] = useState<CaseRow[]>([]);
   const [quickSearch, setQuickSearch] = useState("");
   const [quickSearchFocused, setQuickSearchFocused] = useState(false);
+  const [quickSearchSelectedIndex, setQuickSearchSelectedIndex] = useState(0);
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
+  const [lastLoginAt, setLastLoginAt] = useState<Date | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -273,6 +275,8 @@ export default function DashboardPage() {
       setMsg(null);
 
       try {
+        setLastLoginAt(new Date());
+
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
         setRole(String(data?.role ?? "lawyer"));
@@ -694,6 +698,10 @@ export default function DashboardPage() {
     })();
   }, [user]);
 
+  useEffect(() => {
+    setQuickSearchSelectedIndex(0);
+  }, [quickSearch]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
@@ -719,18 +727,43 @@ export default function DashboardPage() {
   function openCaseFromQuickSearch(caseId: string) {
     setQuickSearch("");
     setQuickSearchFocused(false);
+    setQuickSearchSelectedIndex(0);
     router.push(`/cases/manage/${caseId}`);
   }
 
   function handleQuickSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (quickSearchResults.length === 0) return;
+      setQuickSearchSelectedIndex((prev) =>
+        prev + 1 >= quickSearchResults.length ? 0 : prev + 1
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (quickSearchResults.length === 0) return;
+      setQuickSearchSelectedIndex((prev) =>
+        prev - 1 < 0 ? quickSearchResults.length - 1 : prev - 1
+      );
+      return;
+    }
+
     if (e.key === "Enter") {
       e.preventDefault();
       if (quickSearchResults.length > 0) {
-        openCaseFromQuickSearch(quickSearchResults[0].id);
+        const picked =
+          quickSearchResults[
+            Math.min(quickSearchSelectedIndex, quickSearchResults.length - 1)
+          ];
+        if (picked) openCaseFromQuickSearch(picked.id);
       }
+      return;
     }
 
     if (e.key === "Escape") {
+      e.preventDefault();
       setQuickSearchFocused(false);
     }
   }
@@ -743,6 +776,8 @@ export default function DashboardPage() {
       pendingInvites={pendingInvites}
       onLogout={doLogout}
     >
+      
+
       {msg ? (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ⚠️ {msg}
@@ -784,22 +819,31 @@ export default function DashboardPage() {
                   No hay coincidencias.
                 </div>
               ) : (
-                quickSearchResults.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => openCaseFromQuickSearch(item.id)}
-                    className="block w-full border-b border-gray-100 px-4 py-3 text-left transition hover:bg-gray-50 last:border-b-0 dark:border-gray-800 dark:hover:bg-gray-800/40"
-                  >
-                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                      {item.caratulaTentativa || "(sin carátula)"}
-                    </div>
-                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                      Abrir gestión de la causa
-                    </div>
-                  </button>
-                ))
+                quickSearchResults.map((item, idx) => {
+                  const isActive = idx === quickSearchSelectedIndex;
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => setQuickSearchSelectedIndex(idx)}
+                      onClick={() => openCaseFromQuickSearch(item.id)}
+                      className={`block w-full border-b border-gray-100 px-4 py-3 text-left transition last:border-b-0 dark:border-gray-800 ${
+                        isActive
+                          ? "bg-gray-100 dark:bg-gray-800"
+                          : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                      }`}
+                    >
+                      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                        {item.caratulaTentativa || "(sin carátula)"}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                        Abrir gestión de la causa
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
           ) : null}

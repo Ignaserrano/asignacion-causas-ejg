@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -44,6 +43,10 @@ type ManualEntryType = "event" | "recordatorio";
 
 function safeText(v: any) {
   return String(v ?? "").trim();
+}
+
+function safeLower(v: any) {
+  return safeText(v).toLowerCase();
 }
 
 function fmtDateTime(value?: any) {
@@ -333,7 +336,10 @@ function EventPill({
   return (
     <button
       type="button"
-      onClick={() => onClick(row)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(row);
+      }}
       className="block w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-2 py-1 text-left text-xs shadow-sm transition hover:opacity-90"
       style={{
         borderColor: `${pillColor}55`,
@@ -399,6 +405,10 @@ export default function CalendarPage() {
   const [reprogramStartAtInput, setReprogramStartAtInput] = useState("");
   const [reprogramEndAtInput, setReprogramEndAtInput] = useState("");
   const [reprogramSaving, setReprogramSaving] = useState(false);
+
+  const [quickEventSearch, setQuickEventSearch] = useState("");
+  const [quickEventSearchFocused, setQuickEventSearchFocused] = useState(false);
+  const [quickEventSelectedIndex, setQuickEventSelectedIndex] = useState(0);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -489,6 +499,25 @@ export default function CalendarPage() {
       );
     });
   }, [visibleRows]);
+
+  const upcomingRowsLimited = useMemo(() => upcomingRows.slice(0, 20), [upcomingRows]);
+
+  const quickEventSearchResults = useMemo(() => {
+    const term = safeLower(quickEventSearch);
+    if (!term) return [];
+
+    return visibleRows
+      .filter((row) => {
+        const status = safeText((row as any).status || "active");
+        if (status === "cancelled") return false;
+        return safeLower(row.title).includes(term);
+      })
+      .slice(0, 12);
+  }, [visibleRows, quickEventSearch]);
+
+  useEffect(() => {
+    setQuickEventSelectedIndex(0);
+  }, [quickEventSearch]);
 
   const monthDates = useMemo(() => getMonthGridDates(currentDate), [currentDate]);
 
@@ -674,6 +703,11 @@ export default function CalendarPage() {
     });
   }
 
+  function openDayView(day: Date) {
+    setCurrentDate(new Date(day));
+    setViewMode("day");
+  }
+
   function openEventDetail(row: CalendarEventRow) {
     setSelectedEvent(row);
     setReprogramModalOpen(false);
@@ -683,6 +717,56 @@ export default function CalendarPage() {
 
     setReprogramStartAtInput(start ? fmtDateTimeInput(start) : "");
     setReprogramEndAtInput(end ? fmtDateTimeInput(end) : "");
+  }
+
+  function openEventFromQuickSearch(row: CalendarEventRow) {
+    const start = toDate(row.startAt);
+    if (start) {
+      setCurrentDate(start);
+      setViewMode("day");
+    }
+
+    setQuickEventSearch("");
+    setQuickEventSearchFocused(false);
+    setQuickEventSelectedIndex(0);
+    openEventDetail(row);
+  }
+
+  function handleQuickEventSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (quickEventSearchResults.length === 0) return;
+      setQuickEventSelectedIndex((prev) =>
+        prev + 1 >= quickEventSearchResults.length ? 0 : prev + 1
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (quickEventSearchResults.length === 0) return;
+      setQuickEventSelectedIndex((prev) =>
+        prev - 1 < 0 ? quickEventSearchResults.length - 1 : prev - 1
+      );
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (quickEventSearchResults.length > 0) {
+        openEventFromQuickSearch(
+          quickEventSearchResults[
+            Math.min(quickEventSelectedIndex, quickEventSearchResults.length - 1)
+          ]
+        );
+      }
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setQuickEventSearchFocused(false);
+    }
   }
 
   async function reprogramEvent() {
@@ -1061,6 +1145,94 @@ export default function CalendarPage() {
 
         <div className="grid gap-4">
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Buscador rápido de eventos
+            </div>
+
+            <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              Buscá por título y movete con ↑ ↓ Enter para abrir rápido el evento.
+            </div>
+
+            <div className="relative mt-3">
+              <input
+                value={quickEventSearch}
+                onChange={(e) => setQuickEventSearch(e.target.value)}
+                onFocus={() => setQuickEventSearchFocused(true)}
+                onBlur={() => {
+                  setTimeout(() => setQuickEventSearchFocused(false), 150);
+                }}
+                onKeyDown={handleQuickEventSearchKeyDown}
+                placeholder="Ej.: Audiencia, reunión con cliente, vencimiento..."
+                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+              />
+
+              {quickEventSearchFocused && safeText(quickEventSearch) ? (
+                <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-900">
+                  {quickEventSearchResults.length === 0 ? (
+                    <div className="px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                      No hay coincidencias.
+                    </div>
+                  ) : (
+                    quickEventSearchResults.map((item, idx) => {
+                      const isActive = idx === quickEventSelectedIndex;
+                      const reminder = isReminderEvent(item);
+                      const rescheduled = isRescheduledEvent(item);
+                      const dotColor = rescheduled ? "#9ca3af" : item.color || "#3b82f6";
+
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setQuickEventSelectedIndex(idx)}
+                          onClick={() => openEventFromQuickSearch(item)}
+                          className={`block w-full border-b border-gray-100 px-4 py-3 text-left transition last:border-b-0 dark:border-gray-800 ${
+                            isActive
+                              ? "bg-gray-100 dark:bg-gray-800"
+                              : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span
+                              className="mt-1 inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-black/10"
+                              style={{ backgroundColor: dotColor }}
+                            />
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
+                                  {item.title}
+                                </div>
+
+                                {reminder ? (
+                                  <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
+                                    Recordatorio
+                                  </span>
+                                ) : null}
+
+                                {rescheduled ? (
+                                  <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                    Reprogramado
+                                  </span>
+                                ) : null}
+                              </div>
+
+                              <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                {fmtDateTime(item.startAt)}
+                                {item.caseRef?.caratula ? ` · ${item.caseRef.caratula}` : ""}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm font-black text-gray-900 dark:text-gray-100">
                 Vista de agenda
@@ -1169,13 +1341,22 @@ export default function CalendarPage() {
 
                     return (
                       <div
-                        key={key}
-                        className={`min-h-[130px] min-w-0 overflow-hidden rounded-2xl border p-2 ${
-                          isToday
-                            ? "border-black dark:border-white"
-                            : "border-gray-200 dark:border-gray-800"
-                        } ${isCurrentMonth ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/50"}`}
-                      >
+  key={key}
+  role="button"
+  tabIndex={0}
+  onClick={() => openDayView(day)}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openDayView(day);
+    }
+  }}
+  className={`min-h-[130px] min-w-0 overflow-hidden rounded-2xl border p-2 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
+    isToday
+      ? "border-black dark:border-white"
+      : "border-gray-200 dark:border-gray-800"
+  } ${isCurrentMonth ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/50"}`}
+>
                         <div
                           className={`mb-2 text-sm font-black ${
                             isCurrentMonth
@@ -1212,14 +1393,23 @@ export default function CalendarPage() {
                   const isToday = isSameDay(day, new Date());
 
                   return (
-                    <div
-                      key={key}
-                      className={`min-w-0 overflow-hidden rounded-2xl border p-3 ${
-                        isToday
-                          ? "border-black dark:border-white"
-                          : "border-gray-200 dark:border-gray-800"
-                      }`}
-                    >
+                   <div
+  key={key}
+  role="button"
+  tabIndex={0}
+  onClick={() => openDayView(day)}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openDayView(day);
+    }
+  }}
+  className={`min-w-0 overflow-hidden rounded-2xl border p-3 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
+    isToday
+      ? "border-black dark:border-white"
+      : "border-gray-200 dark:border-gray-800"
+  }`}
+>
                       <div className="text-sm font-black text-gray-900 dark:text-gray-100">
                         {fmtDateLabel(day)}
                       </div>
@@ -1336,104 +1526,70 @@ export default function CalendarPage() {
             ) : null}
 
             {viewMode === "agenda" ? (
-              <div className="mt-4 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-800">
-                <div className="overflow-x-auto">
-                  <table className="min-w-full border-collapse">
-                    <thead>
-                      <tr className="bg-gray-50 dark:bg-gray-800/70">
-                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                          Fecha
-                        </th>
-                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                          Hora
-                        </th>
-                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                          Evento
-                        </th>
-                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                          Visible para
-                        </th>
-                        <th className="border-b border-gray-200 px-2 py-2 text-left text-xs font-black text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                          Origen
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {agendaRows.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="px-2 py-3 text-sm text-gray-700 dark:text-gray-200"
-                          >
-                            No hay eventos en este período.
-                          </td>
-                        </tr>
-                      ) : (
-                        agendaRows.map((row, idx) => {
-                          const rescheduled = isRescheduledEvent(row);
-                          const reminder = isReminderEvent(row);
-                          const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+              <div className="mt-4 grid gap-3">
+                {agendaRows.length === 0 ? (
+                  <div className="rounded-2xl border border-gray-200 p-4 text-sm text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                    No hay eventos en este período.
+                  </div>
+                ) : (
+                  agendaRows.map((row) => {
+                    const rescheduled = isRescheduledEvent(row);
+                    const reminder = isReminderEvent(row);
+                    const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
 
-                          return (
-                            <tr
-                              key={row.id}
-                              className={
-                                idx % 2 === 0
-                                  ? "bg-white dark:bg-gray-900"
-                                  : "bg-gray-50/50 dark:bg-gray-800/30"
-                              }
-                            >
-                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200 whitespace-nowrap">
-                                {toDate(row.startAt)?.toLocaleDateString("es-AR") ?? "-"}
-                              </td>
+                    return (
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => openEventDetail(row)}
+                        className="w-full rounded-2xl border border-gray-200 bg-white p-4 text-left transition hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:hover:bg-gray-800/40"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span
+                            className="mt-1 inline-block h-4 w-4 shrink-0 rounded-full border border-black/10"
+                            style={{ backgroundColor: dotColor }}
+                            title={colorLabel(dotColor)}
+                          />
 
-                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200 whitespace-nowrap">
-                                {fmtHour(row.startAt)}
-                                {row.endAt ? ` → ${fmtHour(row.endAt)}` : ""}
-                              </td>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                                {row.title}
+                              </div>
 
-                              <td className="border-b border-gray-100 px-2 py-2 dark:border-gray-800">
-                                <button
-                                  type="button"
-                                  onClick={() => openEventDetail(row)}
-                                  className="flex w-full items-center gap-2 text-left"
-                                >
-                                  <span
-                                    className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/10"
-                                    style={{ backgroundColor: dotColor }}
-                                  />
-                                  <span className="truncate text-sm font-black text-gray-900 dark:text-gray-100">
-                                    {row.title}
-                                  </span>
+                              {reminder ? (
+                                <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
+                                  Recordatorio
+                                </span>
+                              ) : null}
 
-                                  {reminder ? (
-                                    <span className="shrink-0 rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
-                                      Recordatorio
-                                    </span>
-                                  ) : null}
+                              {rescheduled ? (
+                                <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                  Reprogramado
+                                </span>
+                              ) : null}
+                            </div>
 
-                                  {rescheduled ? (
-                                    <span className="shrink-0 rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
-                                      Reprogramado
-                                    </span>
-                                  ) : null}
-                                </button>
-                              </td>
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                              {toDate(row.startAt)?.toLocaleDateString("es-AR") ?? "-"} · {fmtHour(row.startAt)}
+                              {row.endAt ? ` → ${fmtHour(row.endAt)}` : ""}
+                            </div>
 
-                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                                {visibilityLabel(row, users, user)}
-                              </td>
+                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                              {visibilityLabel(row, users, user)} · {sourceLabel(row)}
+                            </div>
 
-                              <td className="border-b border-gray-100 px-2 py-2 text-xs text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                                {sourceLabel(row)}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                            {safeText(row.caseRef?.caratula) ? (
+                              <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                                Causa: {row.caseRef?.caratula}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
               </div>
             ) : null}
           </div>
@@ -1444,17 +1600,17 @@ export default function CalendarPage() {
                 Próximos eventos
               </div>
               <div className="text-xs text-gray-600 dark:text-gray-300">
-                {upcomingRows.length} visible(s)
+                mostrando {upcomingRowsLimited.length} de {upcomingRows.length}
               </div>
             </div>
 
             <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
-              {upcomingRows.length === 0 ? (
+              {upcomingRowsLimited.length === 0 ? (
                 <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
                   No hay próximos eventos.
                 </div>
               ) : (
-                upcomingRows.slice(0, 20).map((row) => {
+                upcomingRowsLimited.map((row) => {
                   const rescheduled = isRescheduledEvent(row);
                   const reminder = isReminderEvent(row);
                   const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";

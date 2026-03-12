@@ -37,6 +37,7 @@ type MainCaseRow = {
   caratulaTentativa?: string;
   confirmedAssigneesUids?: string[];
   broughtByUid?: string;
+  broughtByParticipates?: boolean;
 };
 
 type ContactDoc = {
@@ -172,28 +173,72 @@ function makeId() {
   return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 }
 
+function splitPercent(total: number, count: number) {
+  if (count <= 0) return [] as number[];
+
+  const base = Number((total / count).toFixed(2));
+  const values = Array.from({ length: count }, () => base);
+  const used = Number((base * (count - 1)).toFixed(2));
+  values[count - 1] = Number((total - used).toFixed(2));
+  return values;
+}
+
+function buildLawyerParticipant(uid: string, percent: number, lawyers: LawyerOption[]) {
+  const found = lawyers.find((l) => l.uid === uid);
+  return {
+    id: makeId(),
+    uid,
+    displayName: found?.email ?? uid,
+    percent: Number(percent.toFixed(2)),
+    kind: "lawyer" as const,
+  };
+}
+
 function buildEqualParticipants(uids: string[], lawyers: LawyerOption[]) {
   const uniq = Array.from(new Set(uids.filter(Boolean)));
   if (uniq.length === 0) return [] as DistributionParticipantDraft[];
 
-  const equal = 100 / uniq.length;
+  const percents = splitPercent(100, uniq.length);
 
-  return uniq.map((uid, idx) => {
-    const found = lawyers.find((l) => l.uid === uid);
-    const base = Number(equal.toFixed(2));
-    const percent =
-      idx === uniq.length - 1
-        ? Number((100 - base * (uniq.length - 1)).toFixed(2))
-        : base;
+  return uniq.map((uid, idx) => buildLawyerParticipant(uid, percents[idx], lawyers));
+}
 
-    return {
-      id: makeId(),
-      uid,
-      displayName: found?.email ?? uid,
-      percent,
-      kind: "lawyer" as const,
-    };
-  });
+function buildSuggestedParticipantsForCase(
+  c: MainCaseRow | null,
+  lawyers: LawyerOption[]
+): DistributionParticipantDraft[] {
+  if (!c) return [];
+
+  const confirmed = Array.from(new Set((c.confirmedAssigneesUids ?? []).filter(Boolean)));
+  const broughtByUid = safeText(c.broughtByUid);
+  const broughtByParticipates = Boolean(c.broughtByParticipates ?? true);
+
+  if (!broughtByUid) {
+    return buildEqualParticipants(confirmed, lawyers);
+  }
+
+  if (broughtByParticipates) {
+    const workingLawyers = confirmed.includes(broughtByUid)
+      ? confirmed
+      : confirmed.length > 0
+      ? Array.from(new Set([broughtByUid, ...confirmed]))
+      : [broughtByUid];
+
+    return buildEqualParticipants(workingLawyers, lawyers);
+  }
+
+  const workers = confirmed.filter((uid) => uid !== broughtByUid);
+
+  if (workers.length === 0) {
+    return [buildLawyerParticipant(broughtByUid, 100, lawyers)];
+  }
+
+  const workerPercents = splitPercent(80, workers.length);
+
+  return [
+    buildLawyerParticipant(broughtByUid, 20, lawyers),
+    ...workers.map((uid, idx) => buildLawyerParticipant(uid, workerPercents[idx], lawyers)),
+  ];
 }
 
 function Modal({
@@ -447,9 +492,9 @@ export default function RegistrarCobroPageClient() {
 
   useEffect(() => {
     if (!selectedCaseId || participants.length > 0) return;
-    if (!selectedCase?.confirmedAssigneesUids?.length) return;
+    if (!selectedCase) return;
 
-    setParticipants(buildEqualParticipants(selectedCase.confirmedAssigneesUids, lawyerOptions));
+    setParticipants(buildSuggestedParticipantsForCase(selectedCase, lawyerOptions));
   }, [selectedCaseId, selectedCase, lawyerOptions, participants.length]);
 
   useEffect(() => {
@@ -556,6 +601,25 @@ export default function RegistrarCobroPageClient() {
     }
 
     return safeText(p.displayName) || safeText(p.uid) || "(sin nombre)";
+  }
+
+  function applySuggestedDistribution() {
+    if (originType === "case" && selectedCase) {
+      setParticipants(buildSuggestedParticipantsForCase(selectedCase, lawyerOptions));
+      return;
+    }
+
+    if (user?.uid) {
+      setParticipants([
+        {
+          id: makeId(),
+          uid: user.uid,
+          displayName: user.email ?? "Yo",
+          percent: 100,
+          kind: "lawyer",
+        },
+      ]);
+    }
   }
 
   function applyScheduledCharge(data: ScheduledChargeRow) {
@@ -788,8 +852,8 @@ export default function RegistrarCobroPageClient() {
     if (!validateFormStep()) return;
 
     if (participants.length === 0) {
-      if (originType === "case" && selectedCase?.confirmedAssigneesUids?.length) {
-        setParticipants(buildEqualParticipants(selectedCase.confirmedAssigneesUids, lawyerOptions));
+      if (originType === "case" && selectedCase) {
+        setParticipants(buildSuggestedParticipantsForCase(selectedCase, lawyerOptions));
       } else if (user?.uid) {
         setParticipants([
           {
@@ -808,7 +872,7 @@ export default function RegistrarCobroPageClient() {
 
   async function saveCharge() {
     if (!user) return;
-    if (percentSum !== 100) {
+    if (Number(percentSum.toFixed(2)) !== 100) {
       alert("La suma de porcentajes debe ser exactamente 100.");
       return;
     }
@@ -1392,7 +1456,15 @@ export default function RegistrarCobroPageClient() {
           </div>
 
           <div className="min-w-0 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <div className="text-sm font-black text-gray-900 dark:text-gray-100">Distribución</div>
+            
+
+            {originType === "case" && selectedCase ? (
+              <div className="mt-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+                {selectedCase.broughtByParticipates ?? true
+                  ? "Propuesta automática: reparto en partes iguales entre quienes trabajan la causa."
+                  : "Propuesta automática: 20% para quien trajo la causa y 80% restante en partes iguales entre quienes trabajaron la causa."}
+              </div>
+            ) : null}
 
             <div className="mt-3 grid min-w-0 gap-3 md:grid-cols-3">
               <div className="min-w-0 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
