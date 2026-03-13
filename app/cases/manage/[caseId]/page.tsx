@@ -131,6 +131,7 @@ type QuickCaseRow = {
 
 type MetaDraft = Partial<ManagementMeta> & {
   caratulaTentativa?: string;
+  claimAmount?: number | null;
 };
 
 type CasePaidChargeRow = {
@@ -478,9 +479,21 @@ export default function ManageCasePage() {
   const [assignedLawyerEmails, setAssignedLawyerEmails] = useState<string[]>([]);
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
- const [metaDraft, setMetaDraft] = useState({
-  claimAmount: "",
-});
+  const [metaDraft, setMetaDraft] = useState<MetaDraft>({
+    caratulaTentativa: "",
+    physicalFolder: "",
+    driveFolderUrl: "",
+    expedienteNumber: "",
+    court: "",
+    fuero: "",
+    jurisdiccion: "provincia_bs_as",
+    deptoJudicial: "",
+    status: "preliminar",
+    tribunalAlzada: "",
+    otherOrganism: "",
+    claimAmount: null,
+    claimAmountDate: "",
+  });
 
   const [lawyersModalOpen, setLawyersModalOpen] = useState(false);
   const [allLawyers, setAllLawyers] = useState<LawyerOption[]>([]);
@@ -1041,10 +1054,10 @@ export default function ManageCasePage() {
         status: to,
         tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
         otherOrganism: String(metaDraft.otherOrganism ?? ""),
-       claimAmount:
-  metaDraft.claimAmount == null
-    ? null
-    : Number(metaDraft.claimAmount),
+        claimAmount:
+          metaDraft.claimAmount == null
+            ? null
+            : Number(metaDraft.claimAmount),
         claimAmountDate: String(metaDraft.claimAmountDate ?? ""),
       } as any,
       { from, to },
@@ -2684,17 +2697,17 @@ export default function ManageCasePage() {
                 Monto del juicio
               </span>
               <input
-  type="number"
-  step="0.01"
-  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-  value={metaDraft.claimAmount ?? ""}
-  onChange={(e) =>
-    setMetaDraft((m) => ({
-      ...m,
-      claimAmount: e.target.value === "" ? null : Number(e.target.value),
-    }))
-  }
-/>
+                type="number"
+                step="0.01"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={metaDraft.claimAmount ?? ""}
+                onChange={(e) =>
+                  setMetaDraft((m) => ({
+                    ...m,
+                    claimAmount: e.target.value === "" ? null : Number(e.target.value),
+                  }))
+                }
+              />
             </label>
 
             <label className="grid gap-1">
