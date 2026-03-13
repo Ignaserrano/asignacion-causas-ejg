@@ -70,7 +70,7 @@ function toSecondsMaybe(ts: any): number {
 
 function formatDateFromSeconds(seconds: number): string {
   if (!seconds) return "-";
-  return new Date(seconds * 1000).toLocaleString();
+  return new Date(seconds * 1000).toLocaleString("es-AR", { hour12: false });
 }
 
 export default function InvitesPage() {
@@ -85,6 +85,9 @@ export default function InvitesPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
+  const [respondedPage, setRespondedPage] = useState(1);
+
+  const RESPONDED_PAGE_SIZE = 5;
 
   const pending = useMemo(() => items.filter((i) => i.status === "pending"), [items]);
   const responded = useMemo(() => items.filter((i) => i.status !== "pending"), [items]);
@@ -101,7 +104,25 @@ export default function InvitesPage() {
     });
   }, [responded]);
 
+  const respondedTotalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(respondedSorted.length / RESPONDED_PAGE_SIZE));
+  }, [respondedSorted.length]);
+
+  const respondedVisible = useMemo(() => {
+    const start = (respondedPage - 1) * RESPONDED_PAGE_SIZE;
+    const end = start + RESPONDED_PAGE_SIZE;
+    return respondedSorted.slice(start, end);
+  }, [respondedSorted, respondedPage]);
+
   useEffect(() => {
+    if (respondedPage > respondedTotalPages) {
+      setRespondedPage(respondedTotalPages);
+    }
+  }, [respondedPage, respondedTotalPages]);
+
+  useEffect(() => {
+    let unsubInvites: (() => void) | null = null;
+
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
       if (!u) {
         router.replace("/login");
@@ -133,7 +154,9 @@ export default function InvitesPage() {
 
       const qInv = query(collectionGroup(db, "invites"), where("invitedUid", "==", u.uid));
 
-      const unsub = onSnapshot(
+      if (unsubInvites) unsubInvites();
+
+      unsubInvites = onSnapshot(
         qInv,
         (snap) => {
           (async () => {
@@ -190,11 +213,12 @@ export default function InvitesPage() {
         },
         (err) => setMsg(err.message)
       );
-
-      return () => unsub();
     });
 
-    return () => unsubAuth();
+    return () => {
+      if (unsubInvites) unsubInvites();
+      unsubAuth();
+    };
   }, [router]);
 
   useEffect(() => {
@@ -303,7 +327,7 @@ export default function InvitesPage() {
           <div className="flex flex-wrap items-center gap-2">
             {modeBadge(i)}
             {isPending ? (
-              <Badge>PENDIENTE</Badge>
+              <Badge tone="warn">PENDIENTE</Badge>
             ) : i.status === "accepted" ? (
               <Badge tone="ok">ACEPTADA</Badge>
             ) : (
@@ -329,6 +353,7 @@ export default function InvitesPage() {
           {isPending ? (
             <div className="flex gap-2">
               <button
+                type="button"
                 disabled={busyId === i.id}
                 onClick={() => act(i, "accepted")}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
@@ -337,6 +362,7 @@ export default function InvitesPage() {
               </button>
 
               <button
+                type="button"
                 disabled={busyId === i.id}
                 onClick={() => act(i, "rejected")}
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
@@ -362,6 +388,29 @@ export default function InvitesPage() {
         { label: "Mis invitaciones" },
       ]}
     >
+      {pendingInvites > 0 ? (
+        <a
+          href="#invitaciones-pendientes"
+          className="mb-4 block rounded-xl border border-orange-200 bg-orange-50 p-4 shadow-sm transition hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-black text-orange-900 dark:text-orange-100">
+                Invitaciones pendientes de respuesta
+              </div>
+              <div className="mt-1 text-xs text-orange-800 dark:text-orange-200">
+                Tenés {pendingInvites} invitación{pendingInvites === 1 ? "" : "es"} pendiente
+                {pendingInvites === 1 ? "" : "s"} de respuesta.
+              </div>
+            </div>
+
+            <div className="shrink-0 rounded-full border border-orange-300 bg-white px-3 py-1 text-sm font-black text-orange-900 dark:border-orange-700 dark:bg-orange-950/40 dark:text-orange-100">
+              {pendingInvites}
+            </div>
+          </div>
+        </a>
+      ) : null}
+
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Revisá tus invitaciones pendientes y el historial de respuestas.
@@ -375,9 +424,13 @@ export default function InvitesPage() {
         </div>
       ) : null}
 
-      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+      <div
+        id="invitaciones-pendientes"
+        className="text-sm font-black text-gray-900 dark:text-gray-100"
+      >
         Invitaciones pendientes
       </div>
+
       <div className="mt-3 grid gap-3">
         {pendingSorted.length === 0 ? (
           <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
@@ -388,18 +441,58 @@ export default function InvitesPage() {
         )}
       </div>
 
-      <div className="mt-8 text-sm font-black text-gray-900 dark:text-gray-100">
-        Invitaciones respondidas
+      <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Últimas invitaciones respondidas
+          </div>
+          <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Se muestran de a {RESPONDED_PAGE_SIZE}. Total respondidas: {respondedSorted.length}.
+          </div>
+        </div>
+
+        {respondedSorted.length > 0 ? (
+          <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+            Página {respondedPage} de {respondedTotalPages}
+          </div>
+        ) : null}
       </div>
+
       <div className="mt-3 grid gap-3">
         {respondedSorted.length === 0 ? (
           <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
             Todavía no respondiste invitaciones.
           </div>
         ) : (
-          respondedSorted.map((i) => <RowCard key={i.id} i={i} kind="responded" />)
+          respondedVisible.map((i) => <RowCard key={i.id} i={i} kind="responded" />)
         )}
       </div>
+
+      {respondedSorted.length > 0 ? (
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => setRespondedPage((p) => Math.max(1, p - 1))}
+            disabled={respondedPage <= 1}
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
+          >
+            Anterior
+          </button>
+
+          <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-black text-gray-800 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100">
+            {respondedPage} / {respondedTotalPages}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setRespondedPage((p) => Math.min(respondedTotalPages, p + 1))}
+            disabled={respondedPage >= respondedTotalPages}
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:hover:bg-gray-800"
+          >
+            Siguiente
+          </button>
+        </div>
+      ) : null}
 
       <ScrollToTopButton />
     </AppShell>

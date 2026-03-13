@@ -385,6 +385,11 @@ export default function AppShell({
               label: "Administrar especialidades",
               icon: <IconShield className="h-4 w-4" />,
             },
+            {
+              href: "/kpi",
+              label: "KPI",
+              icon: <IconUsers className="h-4 w-4" />,
+            },
           ]
         : [],
     [isAdmin]
