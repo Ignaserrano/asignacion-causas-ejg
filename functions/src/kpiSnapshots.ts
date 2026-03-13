@@ -181,8 +181,8 @@ function getMonthStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
-function getNextMonth(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 1);
+function addMonths(date: Date, diff: number) {
+  return new Date(date.getFullYear(), date.getMonth() + diff, 1);
 }
 
 async function readAll<T = admin.firestore.DocumentData>(collectionName: string) {
@@ -190,10 +190,21 @@ async function readAll<T = admin.firestore.DocumentData>(collectionName: string)
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as T) }));
 }
 
+async function assertAdminUid(uid: string) {
+  const callerSnap = await db.collection("users").doc(uid).get();
+  const callerRole = callerSnap.exists ? safeText(callerSnap.data()?.role) : "";
+  if (callerRole !== "admin") {
+    throw new HttpsError(
+      "permission-denied",
+      "Solo un administrador puede ejecutar esta acción."
+    );
+  }
+}
+
 async function buildAndSaveSnapshot(params: {
   periodKey: string;
   targetMonth: Date;
-  source: "scheduled_function" | "manual_callable" | "historical_rebuild";
+  source: "scheduled_function" | "manual_callable" | "manual_rebuild";
   requestedByUid?: string | null;
   force?: boolean;
 }) {
@@ -351,19 +362,27 @@ export const saveMonthlyKpiSnapshot = onSchedule(
     timeoutSeconds: 540,
   },
   async () => {
-    const targetMonth = getPreviousMonthReference(new Date());
-    const periodKey = monthKeyFromDate(targetMonth);
+    try {
+      const targetMonth = getPreviousMonthReference(new Date());
+      const periodKey = monthKeyFromDate(targetMonth);
 
-    logger.info("Iniciando snapshot mensual KPI", { periodKey });
+      logger.info("Iniciando snapshot mensual KPI", { periodKey });
 
-    const result = await buildAndSaveSnapshot({
-      periodKey,
-      targetMonth,
-      source: "scheduled_function",
-      force: false,
-    });
+      const result = await buildAndSaveSnapshot({
+        periodKey,
+        targetMonth,
+        source: "scheduled_function",
+        force: false,
+      });
 
-    logger.info("Resultado snapshot mensual KPI", result);
+      logger.info("Resultado snapshot mensual KPI", result);
+    } catch (error: any) {
+      logger.error("Error en saveMonthlyKpiSnapshot", {
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? "",
+      });
+      throw error;
+    }
   }
 );
 
@@ -374,137 +393,133 @@ export const generateKpiSnapshotManual = onCall(
     timeoutSeconds: 540,
   },
   async (request) => {
-    if (!request.auth) {
-      throw new HttpsError("unauthenticated", "Debés estar autenticado.");
-    }
+    try {
+      if (!request.auth) {
+        throw new HttpsError("unauthenticated", "Debés estar autenticado.");
+      }
 
-    const uid = request.auth.uid;
-    const data = request.data ?? {};
-    const periodKey = safeText(data.periodKey);
-    const force = Boolean(data.force);
+      const uid = request.auth.uid;
+      const data = request.data ?? {};
+      const periodKey = safeText(data.periodKey);
+      const force = Boolean(data.force);
 
-    if (!periodKey) {
-      throw new HttpsError("invalid-argument", "Falta periodKey. Usá formato YYYY-MM.");
-    }
+      if (!periodKey) {
+        throw new HttpsError("invalid-argument", "Falta periodKey. Usá formato YYYY-MM.");
+      }
 
-    const targetMonth = parsePeriodKey(periodKey);
-    if (!targetMonth) {
-      throw new HttpsError("invalid-argument", "periodKey inválido. Usá formato YYYY-MM.");
-    }
+      const targetMonth = parsePeriodKey(periodKey);
+      if (!targetMonth) {
+        throw new HttpsError("invalid-argument", "periodKey inválido. Usá formato YYYY-MM.");
+      }
 
-    const callerSnap = await db.collection("users").doc(uid).get();
-    const callerRole = callerSnap.exists ? safeText(callerSnap.data()?.role) : "";
+      await assertAdminUid(uid);
 
-    if (callerRole !== "admin") {
-      throw new HttpsError(
-        "permission-denied",
-        "Solo un administrador puede generar snapshots manualmente."
-      );
-    }
-
-    logger.info("Generación manual de snapshot KPI solicitada", {
-      uid,
-      periodKey,
-      force,
-    });
-
-    const result = await buildAndSaveSnapshot({
-      periodKey,
-      targetMonth,
-      source: "manual_callable",
-      requestedByUid: uid,
-      force,
-    });
-
-    return result;
-  }
-);
-
-export const rebuildKpiSnapshotHistory = onCall(
-  {
-    region: "us-central1",
-    memory: "256MiB",
-    timeoutSeconds: 540,
-  },
-  async (request) => {
-    if (!request.auth) {
-      throw new HttpsError("unauthenticated", "Debés estar autenticado.");
-    }
-
-    const uid = request.auth.uid;
-    const data = request.data ?? {};
-    const force = Boolean(data.force);
-
-    const callerSnap = await db.collection("users").doc(uid).get();
-    const callerRole = callerSnap.exists ? safeText(callerSnap.data()?.role) : "";
-
-    if (callerRole !== "admin") {
-      throw new HttpsError(
-        "permission-denied",
-        "Solo un administrador puede reconstruir el histórico."
-      );
-    }
-
-    const casesSnap = await db.collection("cases").orderBy("createdAt", "asc").limit(1).get();
-
-    if (casesSnap.empty) {
-      return {
-        ok: true,
-        createdPeriods: [],
-        skippedPeriods: [],
-        message: "No hay causas para reconstruir histórico.",
-      };
-    }
-
-    const firstCase = casesSnap.docs[0].data() as any;
-    const firstDate = toDate(firstCase?.createdAt);
-
-    if (!firstDate) {
-      throw new HttpsError(
-        "failed-precondition",
-        "No se pudo determinar la fecha inicial para reconstruir el histórico."
-      );
-    }
-
-    const start = getMonthStart(firstDate);
-    const current = getMonthStart(new Date());
-
-    const createdPeriods: string[] = [];
-    const skippedPeriods: string[] = [];
-
-    let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
-
-    while (cursor <= current) {
-      const periodKey = monthKeyFromDate(cursor);
+      logger.info("Generación manual de snapshot KPI solicitada", {
+        uid,
+        periodKey,
+        force,
+      });
 
       const result = await buildAndSaveSnapshot({
         periodKey,
-        targetMonth: new Date(cursor.getFullYear(), cursor.getMonth(), 1),
-        source: "historical_rebuild",
+        targetMonth,
+        source: "manual_callable",
         requestedByUid: uid,
         force,
       });
 
-      if (result.skipped) {
-        skippedPeriods.push(periodKey);
-      } else {
-        createdPeriods.push(periodKey);
+      return result;
+    } catch (error: any) {
+      logger.error("Error en generateKpiSnapshotManual", {
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? "",
+      });
+
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", error?.message ?? "Error interno generando snapshot manual.");
+    }
+  }
+);
+
+export const rebuildKpiHistoryManual = onCall(
+  {
+    region: "us-central1",
+    memory: "512MiB",
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    try {
+      if (!request.auth) {
+        throw new HttpsError("unauthenticated", "Debés estar autenticado.");
       }
 
-      cursor = getNextMonth(cursor);
+      const uid = request.auth.uid;
+      await assertAdminUid(uid);
+
+      const data = request.data ?? {};
+      const force = Boolean(data.force);
+      const firstPeriodKey = safeText(data.firstPeriodKey);
+
+      if (!firstPeriodKey) {
+        throw new HttpsError("invalid-argument", "Falta firstPeriodKey. Usá formato YYYY-MM.");
+      }
+
+      const firstMonth = parsePeriodKey(firstPeriodKey);
+      if (!firstMonth) {
+        throw new HttpsError("invalid-argument", "firstPeriodKey inválido. Usá formato YYYY-MM.");
+      }
+
+      const lastMonth = getPreviousMonthReference(new Date());
+
+      if (firstMonth.getTime() > lastMonth.getTime()) {
+        throw new HttpsError(
+          "invalid-argument",
+          "El primer período no puede ser posterior al último mes cerrado."
+        );
+      }
+
+      const results: Array<{
+        periodKey: string;
+        skipped?: boolean;
+        reason?: string;
+      }> = [];
+
+      let cursor = getMonthStart(firstMonth);
+      const end = getMonthStart(lastMonth);
+
+      while (cursor.getTime() <= end.getTime()) {
+        const periodKey = monthKeyFromDate(cursor);
+
+        const result = await buildAndSaveSnapshot({
+          periodKey,
+          targetMonth: cursor,
+          source: "manual_rebuild",
+          requestedByUid: uid,
+          force,
+        });
+
+        results.push({
+          periodKey,
+          skipped: Boolean(result.skipped),
+          reason: result.reason,
+        });
+
+        cursor = addMonths(cursor, 1);
+      }
+
+      return {
+        ok: true,
+        count: results.length,
+        results,
+      };
+    } catch (error: any) {
+      logger.error("Error en rebuildKpiHistoryManual", {
+        message: error?.message ?? String(error),
+        stack: error?.stack ?? "",
+      });
+
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("internal", error?.message ?? "Error interno reconstruyendo histórico.");
     }
-
-    logger.info("Reconstrucción histórica KPI finalizada", {
-      uid,
-      force,
-      createdPeriods,
-      skippedPeriods,
-    });
-
-    return {
-      ok: true,
-      createdPeriods,
-      skippedPeriods,
-    };
   }
 );

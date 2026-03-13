@@ -9,7 +9,7 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
-  doc,
+   doc,
   getDoc,
   getDocs,
   limit,
@@ -48,12 +48,30 @@ import { createAutoEventFromCaseLog } from "@/lib/events";
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
 
+type InitialDraftWorkflow = {
+  status?: "drafting" | "ready";
+  responsibleUid?: string;
+  responsibleEmail?: string;
+  dueDate?: string;
+  startedAt?: any;
+  startedByUid?: string;
+  startedByEmail?: string;
+  firstDraftCompletedAt?: any;
+  firstDraftCompletedByUid?: string;
+  firstDraftCompletedByEmail?: string;
+  reviewedAt?: any;
+  reviewedByUid?: string;
+  reviewedByEmail?: string;
+};
+
 type CaseDoc = {
   caratulaTentativa?: string;
   jurisdiccion?: "nacional" | "federal" | "caba" | "provincia_bs_as";
   confirmedAssigneesUids?: string[];
   broughtByUid?: string;
   status?: MainCaseStatus;
+  managementStatus?: CaseStatus;
+  initialDraftWorkflow?: InitialDraftWorkflow;
 };
 
 type Party = {
@@ -539,7 +557,13 @@ export default function ManageCasePage() {
   const [caseChargesModalOpen, setCaseChargesModalOpen] = useState(false);
   const [caseChargesLoading, setCaseChargesLoading] = useState(false);
   const [caseChargesRows, setCaseChargesRows] = useState<CasePaidChargeRow[]>([]);
+const [participantLawyers, setParticipantLawyers] = useState<LawyerOption[]>([]);
 
+const [initialDraftMarked, setInitialDraftMarked] = useState(false);
+const [initialDraftResponsibleUid, setInitialDraftResponsibleUid] = useState("");
+const [initialDraftDueDate, setInitialDraftDueDate] = useState("");
+const [savingInitialDraftWorkflow, setSavingInitialDraftWorkflow] = useState(false);
+  
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -676,54 +700,71 @@ export default function ManageCasePage() {
     return !!u && assignees.includes(u);
   }, [user, caseDoc, role]);
 
-  useEffect(() => {
-    if (!caseDoc) return;
+useEffect(() => {
+  if (!caseDoc) return;
 
-    (async () => {
-      try {
-        const assignedUids = Array.from(
-          new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean))
-        );
-        const involvedUids = Array.from(
-          new Set([...(caseDoc.confirmedAssigneesUids ?? []), caseDoc.broughtByUid ?? ""].filter(Boolean))
-        );
+  (async () => {
+    try {
+      const assignedUids = Array.from(
+        new Set((caseDoc.confirmedAssigneesUids ?? []).filter(Boolean))
+      );
+      const involvedUids = Array.from(
+        new Set([...(caseDoc.confirmedAssigneesUids ?? []), caseDoc.broughtByUid ?? ""].filter(Boolean))
+      );
 
-        if (involvedUids.length === 0) {
-          setInvolvedEmails([]);
-          setAssignedLawyerEmails([]);
-          return;
-        }
-
-        const involvedDocs = await Promise.all(
-          involvedUids.map((uid) => getDoc(doc(db, "users", uid)))
-        );
-        const involved = involvedDocs
-          .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
-          .map((e) => String(e).trim())
-          .filter(Boolean);
-
-        setInvolvedEmails(Array.from(new Set(involved)));
-
-        if (assignedUids.length === 0) {
-          setAssignedLawyerEmails([]);
-          return;
-        }
-
-        const assignedDocs = await Promise.all(
-          assignedUids.map((uid) => getDoc(doc(db, "users", uid)))
-        );
-        const assigned = assignedDocs
-          .map((s) => (s.exists() ? ((s.data() as UserDoc).email ?? "") : ""))
-          .map((e) => String(e).trim())
-          .filter(Boolean);
-
-        setAssignedLawyerEmails(Array.from(new Set(assigned)));
-      } catch {
+      if (involvedUids.length === 0) {
         setInvolvedEmails([]);
         setAssignedLawyerEmails([]);
+        setParticipantLawyers([]);
+        return;
       }
-    })();
-  }, [caseDoc]);
+
+      const involvedDocs = await Promise.all(
+        involvedUids.map((uid) => getDoc(doc(db, "users", uid)))
+      );
+
+      const involved = involvedDocs
+        .map((s, idx) =>
+          s.exists()
+            ? {
+                uid: involvedUids[idx],
+                email: String((s.data() as UserDoc).email ?? "").trim(),
+              }
+            : null
+        )
+        .filter(Boolean) as LawyerOption[];
+
+      setInvolvedEmails(
+        Array.from(new Set(involved.map((x) => x.email).filter(Boolean)))
+      );
+
+      const assigned = involved.filter((x) => assignedUids.includes(x.uid));
+      setAssignedLawyerEmails(
+        Array.from(new Set(assigned.map((x) => x.email).filter(Boolean)))
+      );
+      setParticipantLawyers(assigned);
+    } catch {
+      setInvolvedEmails([]);
+      setAssignedLawyerEmails([]);
+      setParticipantLawyers([]);
+    }
+  })();
+}, [caseDoc]);
+
+useEffect(() => {
+  const wf = caseDoc?.initialDraftWorkflow;
+
+  if (wf?.status === "drafting" || wf?.status === "ready") {
+    setInitialDraftMarked(true);
+    setInitialDraftResponsibleUid(String(wf.responsibleUid ?? ""));
+    setInitialDraftDueDate(String(wf.dueDate ?? ""));
+    return;
+  }
+
+  setInitialDraftMarked(false);
+  setInitialDraftResponsibleUid("");
+  setInitialDraftDueDate("");
+}, [caseDoc?.initialDraftWorkflow]);
 
   useEffect(() => {
     const requestedInMeta = Boolean((meta as any)?.archiveRequest?.requestedAt);
@@ -1061,10 +1102,11 @@ export default function ManageCasePage() {
         claimAmountDate: String(metaDraft.claimAmountDate ?? ""),
       } as any,
       { from, to },
-      {
-        caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
-        jurisdiccion: nextJurisdiccion,
-      }
+     {
+  caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
+  jurisdiccion: nextJurisdiccion,
+  managementStatus: to,
+}
     );
   }
 
@@ -1167,6 +1209,57 @@ export default function ManageCasePage() {
     const bracket = prefix ? `[${prefix}] ` : "";
     return `${bracket}${rawTitle}`.trim();
   }
+
+async function createInitialDraftDeadlineEvent(params: {
+  responsibleUid: string;
+  responsibleEmail: string;
+  dueDate: string;
+}) {
+  if (!user) throw new Error("No auth");
+
+  const visibleToUids = Array.from(
+    new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))
+  );
+
+  if (!params.dueDate || visibleToUids.length === 0) return;
+
+  const start = new Date(`${params.dueDate}T09:00:00`);
+  const end = new Date(`${params.dueDate}T10:00:00`);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new Error("La fecha límite no es válida.");
+  }
+
+  await addDoc(collection(db, "events"), {
+    title: buildCalendarTitle("Vence redacción de presentación inicial"),
+    description:
+      `Responsable: ${params.responsibleEmail}\n` +
+      `Fecha límite: ${params.dueDate}\n\n` +
+      `Evento generado automáticamente al pasar la causa a redacción.`,
+    startAt: Timestamp.fromDate(start),
+    endAt: Timestamp.fromDate(end),
+    allDay: false,
+    color: "#dc2626",
+    visibility: "selected_users",
+    visibleToUids,
+    ownerUid: user.uid,
+    ownerEmail: user.email ?? "",
+    source: "system",
+    status: "active",
+    createdAt: serverTimestamp(),
+    createdByUid: user.uid,
+    createdByEmail: user.email ?? "",
+    caseRef: {
+      caseId,
+      caratula: String(caseDoc?.caratulaTentativa ?? "").trim(),
+    },
+    initialDraftWorkflowRef: {
+      responsibleUid: params.responsibleUid,
+      responsibleEmail: params.responsibleEmail,
+      dueDate: params.dueDate,
+    },
+  });
+}
 
   function handleCalendarStartChange(value: string) {
     setCalendarStart(value);
@@ -1610,6 +1703,167 @@ export default function ManageCasePage() {
     }
   }, [logsPage, totalLogPages]);
 
+const currentManagementStatus = (meta?.status ??
+  caseDoc?.managementStatus ??
+  "preliminar") as CaseStatus;
+
+const initialDraftWorkflow = caseDoc?.initialDraftWorkflow;
+const isInitialDraftInDrafting =
+  currentManagementStatus === "preliminar" &&
+  initialDraftWorkflow?.status === "drafting";
+
+const isInitialDraftReady =
+  currentManagementStatus !== "iniciada" &&
+  initialDraftWorkflow?.status === "ready";
+
+const canMarkFirstDraftCompleted =
+  !!user &&
+  isInitialDraftInDrafting &&
+  user.uid === initialDraftWorkflow?.responsibleUid &&
+  !initialDraftWorkflow?.firstDraftCompletedAt;
+
+const canMarkDraftReviewed =
+  !!user &&
+  isInitialDraftInDrafting &&
+  !!initialDraftWorkflow?.firstDraftCompletedAt &&
+  user.uid !== initialDraftWorkflow?.responsibleUid &&
+  (caseDoc?.confirmedAssigneesUids ?? []).includes(user.uid) &&
+  !initialDraftWorkflow?.reviewedAt;
+
+function resetLocalInitialDraftForm() {
+  setInitialDraftMarked(false);
+  setInitialDraftResponsibleUid("");
+  setInitialDraftDueDate("");
+}
+
+async function saveInitialDraftWorkflow() {
+  if (!user) return;
+  if (!canWrite) return alert("No tenés permisos de escritura en esta causa.");
+  if (currentManagementStatus !== "preliminar") {
+    return alert("Este panel solo está disponible para causas en estado preliminar.");
+  }
+  if (!initialDraftMarked) {
+    return alert("Primero tildá 'Pasar causa a redacción'.");
+  }
+  if (!initialDraftResponsibleUid) {
+    return alert("Seleccioná un responsable de redacción.");
+  }
+  if (!initialDraftDueDate) {
+    return alert("Ingresá una fecha límite.");
+  }
+
+  const responsible = participantLawyers.find((x) => x.uid === initialDraftResponsibleUid);
+  if (!responsible) {
+    return alert("No encontré al abogado responsable seleccionado.");
+  }
+
+  const ok = window.confirm(
+    "¿Confirmás pasar la causa a redacción de demanda o presentación inicial?"
+  );
+  if (!ok) return;
+
+  setSavingInitialDraftWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      initialDraftWorkflow: {
+        status: "drafting",
+        responsibleUid: responsible.uid,
+        responsibleEmail: responsible.email,
+        dueDate: initialDraftDueDate,
+        startedAt: serverTimestamp(),
+        startedByUid: user.uid,
+        startedByEmail: user.email ?? "",
+      },
+      managementStatus: currentManagementStatus,
+    });
+
+    await createInitialDraftDeadlineEvent({
+      responsibleUid: responsible.uid,
+      responsibleEmail: responsible.email,
+      dueDate: initialDraftDueDate,
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Causa pasada a redacción de presentación inicial",
+      body:
+        `Responsable: ${responsible.email}\n` +
+        `Fecha límite: ${initialDraftDueDate}`,
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo guardar el flujo de redacción.");
+  } finally {
+    setSavingInitialDraftWorkflow(false);
+  }
+}
+
+
+async function markFirstDraftCompleted() {
+  if (!user) return;
+  if (!canMarkFirstDraftCompleted) return;
+
+  const ok = window.confirm("¿Confirmás marcar la primera redacción como terminada?");
+  if (!ok) return;
+
+  setSavingInitialDraftWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      "initialDraftWorkflow.firstDraftCompletedAt": serverTimestamp(),
+      "initialDraftWorkflow.firstDraftCompletedByUid": user.uid,
+      "initialDraftWorkflow.firstDraftCompletedByEmail": user.email ?? "",
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Primera redacción terminada",
+      body: "La primera versión de la presentación inicial quedó terminada.",
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo marcar la primera redacción como terminada.");
+  } finally {
+    setSavingInitialDraftWorkflow(false);
+  }
+}
+
+async function markDraftReviewed() {
+  if (!user) return;
+  if (!canMarkDraftReviewed) return;
+
+  const ok = window.confirm(
+    "¿Confirmás marcar la revisión realizada por otro abogado? La causa quedará como lista para presentar."
+  );
+  if (!ok) return;
+
+  setSavingInitialDraftWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      "initialDraftWorkflow.status": "ready",
+      "initialDraftWorkflow.reviewedAt": serverTimestamp(),
+      "initialDraftWorkflow.reviewedByUid": user.uid,
+      "initialDraftWorkflow.reviewedByEmail": user.email ?? "",
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Presentación inicial redactada y revisada",
+      body: "La primera presentación quedó redactada y lista para presentar.",
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo marcar la revisión.");
+  } finally {
+    setSavingInitialDraftWorkflow(false);
+  }
+}
+
   return (
     <AppShell
       title="Gestionar causa"
@@ -1705,13 +1959,25 @@ export default function ManageCasePage() {
             </div>
           </div>
 
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-gray-600 dark:text-gray-300">Causa</div>
-              <div className="truncate text-lg font-black text-gray-900 dark:text-gray-100">
-                {caseDoc.caratulaTentativa || "(sin carátula)"}
-              </div>
-            </div>
+<div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <div className="min-w-0">
+    <div className="text-xs text-gray-600 dark:text-gray-300">Causa</div>
+    <div className="truncate text-lg font-black text-gray-900 dark:text-gray-100">
+      {caseDoc.caratulaTentativa || "(sin carátula)"}
+    </div>
+
+    {isInitialDraftInDrafting ? (
+      <div className="mt-2 inline-flex rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-black text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200">
+        Causa con presentación inicial en redacción
+      </div>
+    ) : null}
+
+    {isInitialDraftReady ? (
+      <div className="mt-2 inline-flex rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-black text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-200">
+        Primera presentación redactada - lista para presentar
+      </div>
+    ) : null}
+  </div>
 
             <div className="flex flex-wrap items-center gap-2">
               {role === "admin" ? (
@@ -2073,10 +2339,146 @@ export default function ManageCasePage() {
             </div>
           </div>
 
+{currentManagementStatus === "preliminar" && !isInitialDraftReady ? (
+  <div className="mt-4 rounded-2xl border border-red-200 bg-white p-4 shadow-sm dark:border-red-900 dark:bg-gray-900">
+    <div className="flex items-center justify-between gap-2">
+      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+        Redacción de demanda o presentación inicial
+      </div>
+
+      {initialDraftWorkflow?.status === "drafting" ? (
+        <span className="rounded-full border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-black text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-200">
+          EN REDACCIÓN
+        </span>
+      ) : null}
+    </div>
+
+    {!initialDraftWorkflow?.status ? (
+      <>
+        <div className="mt-3 grid gap-3">
+          <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100">
+            <input
+              type="checkbox"
+              checked={initialDraftMarked}
+              onChange={() => {
+                if (!initialDraftMarked) setInitialDraftMarked(true);
+              }}
+              disabled={!canWrite || initialDraftMarked}
+              className="h-4 w-4"
+            />
+            <span>Pasar causa a redacción</span>
+          </label>
+
+          {initialDraftMarked ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Responsable de redacción
+                </span>
+                <select
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={initialDraftResponsibleUid}
+                  onChange={(e) => setInitialDraftResponsibleUid(e.target.value)}
+                  disabled={!canWrite}
+                >
+                  <option value="">Seleccionar…</option>
+                  {participantLawyers.map((lawyer) => (
+                    <option key={lawyer.uid} value={lawyer.uid}>
+                      {lawyer.email}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-1">
+                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                  Fecha límite
+                </span>
+                <input
+                  type="date"
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={initialDraftDueDate}
+                  onChange={(e) => setInitialDraftDueDate(e.target.value)}
+                  disabled={!canWrite}
+                />
+              </label>
+
+              <div className="flex flex-wrap gap-2 md:col-span-2">
+  <button
+    type="button"
+    onClick={saveInitialDraftWorkflow}
+    disabled={!canWrite || savingInitialDraftWorkflow}
+    className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+  >
+    {savingInitialDraftWorkflow ? "Guardando..." : "Guardar"}
+  </button>
+</div>
+            </div>
+          ) : null}
+        </div>
+      </>
+    ) : (
+      <div className="mt-3 grid gap-3">
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Responsable: {initialDraftWorkflow.responsibleEmail || "-"}
+          </div>
+          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+            Fecha límite: {initialDraftWorkflow.dueDate || "-"}
+          </div>
+        </div>
+
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          <input
+            type="checkbox"
+            checked={!!initialDraftWorkflow.firstDraftCompletedAt}
+            onChange={() => {
+              if (!initialDraftWorkflow.firstDraftCompletedAt) {
+                void markFirstDraftCompleted();
+              }
+            }}
+            disabled={!canMarkFirstDraftCompleted || savingInitialDraftWorkflow}
+            className="h-4 w-4"
+          />
+          <span>
+            Primera redacción terminada
+            {user?.uid === initialDraftWorkflow.responsibleUid ? "" : " (solo la marca el responsable)"}
+          </span>
+        </label>
+
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          <input
+            type="checkbox"
+            checked={!!initialDraftWorkflow.reviewedAt}
+            onChange={() => {
+              if (!initialDraftWorkflow.reviewedAt) {
+                void markDraftReviewed();
+              }
+            }}
+            disabled={!canMarkDraftReviewed || savingInitialDraftWorkflow}
+            className="h-4 w-4"
+          />
+          <span>
+            Revisión realizada por otro abogado
+            {user?.uid === initialDraftWorkflow.responsibleUid
+              ? " (no la puede marcar quien redactó)"
+              : ""}
+          </span>
+        </label>
+
+        
+      </div>
+    )}
+  </div>
+) : null}
+
           <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                     
             <div className="text-sm font-black text-gray-900 dark:text-gray-100">
               Nueva entrada de bitácora
             </div>
+
+
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <label className="grid gap-1">

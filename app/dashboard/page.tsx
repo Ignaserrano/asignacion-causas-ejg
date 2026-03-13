@@ -34,6 +34,31 @@ async function exportExcel() {
   link.click();
 }
 
+type CaseWorkflowStatus = "drafting" | "ready";
+type ProceduralStatus =
+  | "preliminar"
+  | "iniciada"
+  | "en_prueba"
+  | "a_sentencia"
+  | "en_apelacion"
+  | "en_ejecucion";
+
+type InitialDraftWorkflow = {
+  status?: CaseWorkflowStatus;
+  responsibleUid?: string;
+  responsibleEmail?: string;
+  dueDate?: string;
+  startedAt?: { seconds: number };
+  startedByUid?: string;
+  startedByEmail?: string;
+  firstDraftCompletedAt?: { seconds: number };
+  firstDraftCompletedByUid?: string;
+  firstDraftCompletedByEmail?: string;
+  reviewedAt?: { seconds: number };
+  reviewedByUid?: string;
+  reviewedByEmail?: string;
+};
+
 type FeedItem = {
   caseId: string;
   caratula: string;
@@ -89,6 +114,8 @@ type CaseRow = {
   dashboardLastLogAt?: { seconds: number };
   dashboardLastLogTitle?: string;
   dashboardLastLogByEmail?: string;
+  managementStatus?: ProceduralStatus;
+  initialDraftWorkflow?: InitialDraftWorkflow;
 };
 
 type SentInviteStatus = "pending" | "accepted" | "rejected";
@@ -141,23 +168,6 @@ function safeLower(v: any) {
   return safeText(v).toLowerCase();
 }
 
-function fmtHour(value?: any) {
-  if (!value) return "-";
-  const d = value?.toDate ? value.toDate() : new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleTimeString("es-AR", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-function toDate(value?: any) {
-  if (!value) return null;
-  const d = value?.toDate ? value.toDate() : new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 function sourceLabel(row: CalendarEventRow) {
   if (row.source === "manual") return "Manual";
   if (row.source === "case_log") return "Bitácora";
@@ -166,7 +176,9 @@ function sourceLabel(row: CalendarEventRow) {
 }
 
 function getVisibleToUids(row: CalendarEventRow) {
-  return Array.isArray((row as any).visibleToUids) ? ((row as any).visibleToUids as string[]) : [];
+  return Array.isArray((row as any).visibleToUids)
+    ? ((row as any).visibleToUids as string[])
+    : [];
 }
 
 function isRescheduledEvent(row: CalendarEventRow) {
@@ -188,10 +200,25 @@ function visibilityLabel(
     .map((u) => u.email)
     .filter(Boolean);
 
-  const withoutCurrentUser = emails.filter((email) => email !== safeText(currentUser?.email));
-  const unique = Array.from(new Set(withoutCurrentUser.length > 0 ? withoutCurrentUser : emails));
+  const withoutCurrentUser = emails.filter(
+    (email) => email !== safeText(currentUser?.email)
+  );
+  const unique = Array.from(
+    new Set(withoutCurrentUser.length > 0 ? withoutCurrentUser : emails)
+  );
 
   return unique.length > 0 ? unique.join(", ") : "Usuarios seleccionados";
+}
+
+function fmtDateOnly(value?: string) {
+  if (!value) return "-";
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("es-AR");
+}
+
+function getCaseManagementStatus(c: CaseRow): ProceduralStatus {
+  return (c.managementStatus ?? "preliminar") as ProceduralStatus;
 }
 
 function Modal({
@@ -211,7 +238,9 @@ function Modal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-800 dark:bg-gray-900">
         <div className="mb-4 flex items-center justify-between gap-2">
-          <div className="text-base font-black text-gray-900 dark:text-gray-100">{title}</div>
+          <div className="text-base font-black text-gray-900 dark:text-gray-100">
+            {title}
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -262,7 +291,6 @@ export default function DashboardPage() {
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
-  const [lastLoginAt, setLastLoginAt] = useState<Date | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -276,8 +304,6 @@ export default function DashboardPage() {
       setMsg(null);
 
       try {
-        setLastLoginAt(new Date());
-
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
         setRole(String(data?.role ?? "lawyer"));
@@ -417,7 +443,9 @@ export default function DashboardPage() {
           }
         }
 
-        const grouped = Array.from(groupedMap.values()).sort((a, b) => b.latestSec - a.latestSec);
+        const grouped = Array.from(groupedMap.values()).sort(
+          (a, b) => b.latestSec - a.latestSec
+        );
         setFeedGroups(grouped);
       } catch (e: any) {
         setMsg((prev) => prev ?? (e?.message ?? "Error cargando movimientos/inactividad"));
@@ -658,7 +686,9 @@ export default function DashboardPage() {
         setSentInvites(items.slice(0, 20));
       } catch (e: any) {
         setSentInvites([]);
-        setMsg((prev) => prev ?? (e?.message ?? "Error cargando estado de invitaciones enviadas"));
+        setMsg(
+          (prev) => prev ?? (e?.message ?? "Error cargando estado de invitaciones enviadas")
+        );
       } finally {
         setLoadingSentInvites(false);
       }
@@ -720,10 +750,53 @@ export default function DashboardPage() {
         return Boolean(caratula) && caratula.includes(term);
       })
       .sort((a, b) =>
-        safeText(a.caratulaTentativa).localeCompare(safeText(b.caratulaTentativa), "es")
+        safeText(a.caratulaTentativa).localeCompare(
+          safeText(b.caratulaTentativa),
+          "es"
+        )
       )
       .slice(0, 8);
   }, [myCases, quickSearch]);
+
+  const draftingCases = useMemo(() => {
+    return myCases
+      .filter((c) => {
+        const wf = c.initialDraftWorkflow;
+        const managementStatus = getCaseManagementStatus(c);
+
+        return (
+          c.status !== "archived" &&
+          c.status !== "archsolicited" &&
+          managementStatus === "preliminar" &&
+          wf?.status === "drafting"
+        );
+      })
+      .sort((a, b) => {
+        const aa = a.initialDraftWorkflow?.dueDate ?? "9999-12-31";
+        const bb = b.initialDraftWorkflow?.dueDate ?? "9999-12-31";
+        return aa.localeCompare(bb);
+      });
+  }, [myCases]);
+
+  const readyToFileCases = useMemo(() => {
+    return myCases
+      .filter((c) => {
+        const wf = c.initialDraftWorkflow;
+        const managementStatus = getCaseManagementStatus(c);
+
+        return (
+          c.status !== "archived" &&
+          c.status !== "archsolicited" &&
+          managementStatus !== "iniciada" &&
+          wf?.status === "ready"
+        );
+      })
+      .sort((a, b) => {
+        const aa = a.initialDraftWorkflow?.reviewedAt?.seconds ?? 0;
+        const bb = b.initialDraftWorkflow?.reviewedAt?.seconds ?? 0;
+        return bb - aa;
+      });
+  }, [myCases]);
 
   function openCaseFromQuickSearch(caseId: string) {
     setQuickSearch("");
@@ -777,8 +850,6 @@ export default function DashboardPage() {
       pendingInvites={pendingInvites}
       onLogout={doLogout}
     >
-      
-
       {msg ? (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ⚠️ {msg}
@@ -797,7 +868,8 @@ export default function DashboardPage() {
         </div>
 
         <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
-          Buscá por carátula dentro de las causas en las que intervenís y entrá directo a gestión.
+          Buscá por carátula dentro de las causas en las que intervenís y entrá directo
+          a gestión.
         </div>
 
         <div className="relative mt-3">
@@ -849,13 +921,97 @@ export default function DashboardPage() {
             </div>
           ) : null}
         </div>
-        
       </div>
+
+      {draftingCases.length > 0 || readyToFileCases.length > 0 ? (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {draftingCases.length > 0 ? (
+            <div className="rounded-xl border border-red-200 bg-white p-4 shadow-sm dark:border-red-900 dark:bg-gray-900">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-black text-red-700 dark:text-red-300">
+                  Causas con presentación inicial en redacción
+                </div>
+                <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+                  {draftingCases.length} visible(s)
+                </div>
+              </div>
+
+              <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                Se muestran tus causas preliminares con presentación inicial actualmente
+                en redacción.
+              </div>
+
+              <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+                {draftingCases.map((item) => (
+                  <a
+                    key={item.id}
+                    href={`/cases/manage/${item.id}`}
+                    className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                  >
+                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                      {item.caratulaTentativa || item.id}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                      Responsable:{" "}
+                      {safeText(item.initialDraftWorkflow?.responsibleEmail) || "-"}
+                    </div>
+                    <div className="mt-1 text-xs font-bold text-red-700 dark:text-red-300">
+                      Fecha límite: {fmtDateOnly(item.initialDraftWorkflow?.dueDate)}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {readyToFileCases.length > 0 ? (
+            <div className="rounded-xl border border-green-200 bg-white p-4 shadow-sm dark:border-green-900 dark:bg-gray-900">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-black text-green-700 dark:text-green-300">
+                  Causas con presentación inicial redactada - listas para presentar
+                </div>
+                <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+                  {readyToFileCases.length} visible(s)
+                </div>
+              </div>
+
+              <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                Desaparecen automáticamente de este panel cuando la causa pasa a estado
+                iniciada.
+              </div>
+
+              <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+                {readyToFileCases.map((item) => (
+                  <a
+                    key={item.id}
+                    href={`/cases/manage/${item.id}`}
+                    className="block py-3 transition hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                  >
+                    <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                      {item.caratulaTentativa || item.id}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                      Redacción:{" "}
+                      {safeText(item.initialDraftWorkflow?.responsibleEmail) || "-"}
+                    </div>
+                    <div className="mt-1 text-xs font-bold text-green-700 dark:text-green-300">
+                      Revisada:{" "}
+                      {item.initialDraftWorkflow?.reviewedAt?.seconds
+                        ? fmtDateTime(item.initialDraftWorkflow?.reviewedAt?.seconds)
+                        : "-"}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {pendingInvites > 0 ? (
         <a
           href="/invites"
-          className="mb-4 block rounded-xl border border-orange-200 bg-orange-50 p-4 shadow-sm transition hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+          className="mb-4 mt-4 block rounded-xl border border-orange-200 bg-orange-50 p-4 shadow-sm transition hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
         >
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -864,7 +1020,8 @@ export default function DashboardPage() {
               </div>
               <div className="mt-1 text-xs text-orange-800 dark:text-orange-200">
                 Tenés {pendingInvites} invitación{pendingInvites === 1 ? "" : "es"} recibida
-                {pendingInvites === 1 ? "" : "s"} pendiente{pendingInvites === 1 ? "" : "s"}.
+                {pendingInvites === 1 ? "" : "s"} pendiente
+                {pendingInvites === 1 ? "" : "s"}.
               </div>
             </div>
 
@@ -875,7 +1032,7 @@ export default function DashboardPage() {
         </a>
       ) : null}
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
           <div className="flex items-center justify-between gap-2">
             <div className="text-sm font-black text-gray-900 dark:text-gray-100">
@@ -888,7 +1045,9 @@ export default function DashboardPage() {
 
           <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
             {feedGroups.length === 0 ? (
-              <div className="py-2 text-sm text-gray-700 dark:text-gray-200">Sin movimientos.</div>
+              <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+                Sin movimientos.
+              </div>
             ) : (
               feedGroups.map((group) => (
                 <a
@@ -902,7 +1061,10 @@ export default function DashboardPage() {
 
                   <div className="mt-1 grid gap-1">
                     {group.items.slice(0, 3).map((item, idx) => (
-                      <div key={`${group.caseId}-${idx}`} className="text-xs text-gray-600 dark:text-gray-300">
+                      <div
+                        key={`${group.caseId}-${idx}`}
+                        className="text-xs text-gray-600 dark:text-gray-300"
+                      >
                         {item.title} · {fmtDateTime(item.createdAtSec)}
                         {item.createdByEmail ? ` · ${item.createdByEmail}` : ""}
                       </div>
@@ -932,7 +1094,9 @@ export default function DashboardPage() {
 
           <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
             {inactive.length === 0 ? (
-              <div className="py-2 text-sm text-gray-700 dark:text-gray-200">Sin alertas 🎉</div>
+              <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
+                Sin alertas 🎉
+              </div>
             ) : (
               inactive.map((c, idx) => (
                 <a
@@ -1026,7 +1190,8 @@ export default function DashboardPage() {
 
                 {item.mode === "direct" && item.directJustification ? (
                   <div className="mt-2 text-xs text-gray-700 dark:text-gray-300">
-                    <span className="font-black">Justificación:</span> {item.directJustification}
+                    <span className="font-black">Justificación:</span>{" "}
+                    {item.directJustification}
                   </div>
                 ) : null}
               </a>
@@ -1035,27 +1200,23 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-            Transferencias pendientes
+      {pendingTransfers.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Transferencias pendientes
+            </div>
+            {loadingTransfers ? (
+              <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
+            ) : (
+              <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
+                {pendingTransfers.length} pendiente(s)
+              </div>
+            )}
           </div>
-          {loadingTransfers ? (
-            <div className="text-xs text-gray-600 dark:text-gray-300">Cargando…</div>
-          ) : (
-            <div className="text-xs font-bold text-gray-600 dark:text-gray-300">
-              {pendingTransfers.length} pendiente(s)
-            </div>
-          )}
-        </div>
 
-        <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
-          {!loadingTransfers && pendingTransfers.length === 0 ? (
-            <div className="py-2 text-sm text-gray-700 dark:text-gray-200">
-              No tenés transferencias pendientes.
-            </div>
-          ) : (
-            pendingTransfers.map((item) => (
+          <div className="mt-3 divide-y divide-gray-100 dark:divide-gray-800">
+            {pendingTransfers.map((item) => (
               <a
                 key={item.chargeId}
                 href={`/cobranzas/registrar?ticket=${item.chargeId}`}
@@ -1068,14 +1229,14 @@ export default function DashboardPage() {
                   {item.payerName} · {item.paidAtSec ? fmtDateTime(item.paidAtSec) : "-"}
                 </div>
                 <div className="mt-1 text-xs font-bold text-gray-700 dark:text-gray-200">
-                  {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} · Mi neto:{" "}
-                  {fmtMoney(item.myNetAmount, item.currency)}
+                  {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} ·
+                  {" "}Mi neto: {fmtMoney(item.myNetAmount, item.currency)}
                 </div>
               </a>
-            ))
-          )}
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className="mt-4 rounded-xl border border-red-200 bg-white p-4 shadow-sm dark:border-red-900 dark:bg-gray-900">
         <div className="flex items-center justify-between gap-2">
@@ -1111,7 +1272,8 @@ export default function DashboardPage() {
                   {item.caseLabel}
                 </div>
                 <div className="text-xs text-gray-600 dark:text-gray-300">
-                  {item.payerName} · Vencía: {item.scheduledAtSec ? fmtDateTime(item.scheduledAtSec) : "-"}
+                  {item.payerName} · Vencía:{" "}
+                  {item.scheduledAtSec ? fmtDateTime(item.scheduledAtSec) : "-"}
                 </div>
                 <div className="mt-1 text-xs font-bold text-red-700 dark:text-red-300">
                   Saldo pendiente: {fmtMoney(item.remainingAmount, item.currency)}
@@ -1269,14 +1431,18 @@ export default function DashboardPage() {
           <div className="grid gap-4">
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Inicio</div>
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Inicio
+                </div>
                 <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
                   {fmtTsDateTime(selectedEvent.startAt)}
                 </div>
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Fin</div>
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Fin
+                </div>
                 <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
                   {selectedEvent.endAt ? fmtTsDateTime(selectedEvent.endAt) : "-"}
                 </div>
@@ -1292,7 +1458,9 @@ export default function DashboardPage() {
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Origen</div>
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Origen
+                </div>
                 <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
                   {sourceLabel(selectedEvent)}
                 </div>
@@ -1316,7 +1484,9 @@ export default function DashboardPage() {
 
             {safeText(selectedEvent.caseRef?.caratula) ? (
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Causa</div>
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Causa
+                </div>
                 <div className="mt-1 text-sm font-black text-gray-900 dark:text-gray-100">
                   {selectedEvent.caseRef?.caratula}
                 </div>
@@ -1347,7 +1517,9 @@ export default function DashboardPage() {
 
             {safeText((selectedEvent as any).meetingUrl) ? (
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
-                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Enlace</div>
+                <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">
+                  Enlace
+                </div>
                 <div className="mt-1">
                   <a
                     href={(selectedEvent as any).meetingUrl}
@@ -1391,6 +1563,7 @@ export default function DashboardPage() {
           </div>
         ) : null}
       </Modal>
+
       <ScrollToTopButton />
     </AppShell>
   );

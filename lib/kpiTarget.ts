@@ -8,7 +8,7 @@ export type KpiTarget = {
 };
 
 export function kpiTargetRef(periodKey: string) {
-  return doc(db, "kpi_targets", periodKey);
+  return doc(db, "kpi_target", periodKey);
 }
 
 export async function getKpiTarget(periodKey: string): Promise<KpiTarget | null> {

@@ -19,7 +19,7 @@ import { httpsCallable } from "firebase/functions";
 
 import { auth, db, functions } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
-import { getKpiTarget, saveKpiTarget, type KpiTarget } from "@/lib/kpiTargets";
+import { getKpiTarget, saveKpiTarget, type KpiTarget } from "@/lib/kpiTarget";
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
 
@@ -218,16 +218,10 @@ function monthLabelFromKey(key?: string) {
   return d.toLocaleDateString("es-AR", { month: "long", year: "numeric" });
 }
 
-function getPreviousMonthKeyFrom(periodKey: string) {
+function getPreviousMonthKey(periodKey: string) {
   const [y, m] = periodKey.split("-").map(Number);
   const d = new Date(y, (m || 1) - 2, 1);
   return monthKeyFromDate(d);
-}
-
-function getPreviousMonthKey() {
-  const now = new Date();
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return monthKeyFromDate(prev);
 }
 
 function daysInMonth(date: Date) {
@@ -242,6 +236,31 @@ function percentChange(current: number, previous: number) {
   if (!previous && !current) return 0;
   if (!previous) return 100;
   return ((current - previous) / previous) * 100;
+}
+
+function getEarliestCaseMonth(cases: CaseRow[]) {
+  const validDates = cases
+    .map((c) => toDate(c.createdAt))
+    .filter((d): d is Date => !!d)
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  if (validDates.length === 0) {
+    return monthKeyFromDate(new Date());
+  }
+
+  return monthKeyFromDate(validDates[0]);
+}
+
+async function generarSnapshotManual(periodKey: string, force = false) {
+  const fn = httpsCallable(functions, "generateKpiSnapshotManual");
+  const res: any = await fn({ periodKey, force });
+  return res.data;
+}
+
+async function reconstruirHistoricoCompleto(firstPeriodKey: string, force = false) {
+  const fn = httpsCallable(functions, "rebuildKpiHistoryManual");
+  const res: any = await fn({ firstPeriodKey, force });
+  return res.data;
 }
 
 function BarRow({
@@ -325,7 +344,6 @@ export default function KpiPage() {
 
   const [loadingShell, setLoadingShell] = useState(true);
   const [loadingData, setLoadingData] = useState(true);
-  const [busySnapshot, setBusySnapshot] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const [cases, setCases] = useState<CaseRow[]>([]);
@@ -336,9 +354,12 @@ export default function KpiPage() {
   const [snapshots, setSnapshots] = useState<KpiSnapshotRow[]>([]);
 
   const [historyRange, setHistoryRange] = useState<number>(6);
+  const [savingTarget, setSavingTarget] = useState(false);
+  const [rebuildingHistory, setRebuildingHistory] = useState(false);
+  const [generatingManualSnapshot, setGeneratingManualSnapshot] = useState(false);
 
   const currentPeriodKey = monthKeyFromDate(new Date());
-  const previousPeriodKey = getPreviousMonthKeyFrom(currentPeriodKey);
+  const previousPeriodKey = getPreviousMonthKey(currentPeriodKey);
 
   const [target, setTarget] = useState<KpiTarget | null>(null);
   const [targetDraft, setTargetDraft] = useState<KpiTarget>({
@@ -346,92 +367,6 @@ export default function KpiPage() {
     studioFundTarget: 0,
     newCasesTarget: 0,
   });
-  const [savingTarget, setSavingTarget] = useState(false);
-
-  async function loadAllData(currentUid?: string | null) {
-    if (!currentUid) return;
-
-    setLoadingData(true);
-    try {
-      const [
-        casesSnap,
-        chargesSnap,
-        sentencesSnap,
-        contactsSnap,
-        usersSnap,
-        snapshotsSnap,
-        targetData,
-      ] = await Promise.all([
-        getDocs(query(collection(db, "cases"), limit(1000))),
-        getDocs(query(collection(db, "charges"), limit(1000))),
-        getDocs(query(collection(db, "sentences"), limit(1000))),
-        getDocs(query(collection(db, "contacts"), limit(1000))),
-        getDocs(query(collection(db, "users"), limit(500))),
-        getDocs(query(collection(db, "kpi_snapshots"), orderBy("periodKey", "asc"), limit(120))),
-        getKpiTarget(currentPeriodKey),
-      ]);
-
-      setCases(casesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as CaseRow[]);
-      setCharges(chargesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ChargeRow[]);
-      setSentences(
-        sentencesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as SentenceRow[]
-      );
-      setContacts(contactsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ContactRow[]);
-      setSnapshots(
-        snapshotsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as KpiSnapshotRow[]
-      );
-
-      const nextUsersMap: Record<string, string> = {};
-      usersSnap.docs.forEach((d) => {
-        const data = d.data() as UserDoc;
-        nextUsersMap[d.id] = safeText(data?.email) || d.id;
-      });
-      setUsersMap(nextUsersMap);
-
-      setTarget(targetData);
-      setTargetDraft({
-        revenueTarget: Number(targetData?.revenueTarget ?? 0),
-        studioFundTarget: Number(targetData?.studioFundTarget ?? 0),
-        newCasesTarget: Number(targetData?.newCasesTarget ?? 0),
-      });
-    } catch (e: any) {
-      setMsg((prev) => prev ?? (e?.message ?? "Error cargando indicadores"));
-    } finally {
-      setLoadingData(false);
-    }
-  }
-
-  async function generarSnapshotManual(periodKey: string, force = false) {
-    try {
-      setBusySnapshot(true);
-      const fn = httpsCallable(functions, "generateKpiSnapshotManual");
-      const res: any = await fn({ periodKey, force });
-      await loadAllData(user?.uid ?? null);
-      alert(`Snapshot generado: ${res.data.periodKey}`);
-    } catch (e: any) {
-      alert("Error generando snapshot: " + (e?.message ?? "Error desconocido"));
-    } finally {
-      setBusySnapshot(false);
-    }
-  }
-
-  async function reconstruirHistoricoCompleto(force = false) {
-    try {
-      setBusySnapshot(true);
-      const fn = httpsCallable(functions, "rebuildKpiSnapshotHistory");
-      const res: any = await fn({ force });
-      await loadAllData(user?.uid ?? null);
-
-      const created = Array.isArray(res?.data?.createdPeriods) ? res.data.createdPeriods.length : 0;
-      const skipped = Array.isArray(res?.data?.skippedPeriods) ? res.data.skippedPeriods.length : 0;
-
-      alert(`Reconstrucción finalizada. Creados: ${created}. Omitidos: ${skipped}.`);
-    } catch (e: any) {
-      alert("Error reconstruyendo histórico: " + (e?.message ?? "Error desconocido"));
-    } finally {
-      setBusySnapshot(false);
-    }
-  }
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -467,9 +402,59 @@ export default function KpiPage() {
   }, [router]);
 
   useEffect(() => {
-    if (!user) return;
-    loadAllData(user.uid);
-  }, [user]);
+    (async () => {
+      if (!user) return;
+
+      setLoadingData(true);
+      try {
+        const [
+          casesSnap,
+          chargesSnap,
+          sentencesSnap,
+          contactsSnap,
+          usersSnap,
+          snapshotsSnap,
+          targetData,
+        ] = await Promise.all([
+          getDocs(query(collection(db, "cases"), limit(1000))),
+          getDocs(query(collection(db, "charges"), limit(1000))),
+          getDocs(query(collection(db, "sentences"), limit(1000))),
+          getDocs(query(collection(db, "contacts"), limit(1000))),
+          getDocs(query(collection(db, "users"), limit(500))),
+          getDocs(query(collection(db, "kpi_snapshots"), orderBy("periodKey", "asc"), limit(120))),
+          getKpiTarget(currentPeriodKey),
+        ]);
+
+        setCases(casesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as CaseRow[]);
+        setCharges(chargesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ChargeRow[]);
+        setSentences(
+          sentencesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as SentenceRow[]
+        );
+        setContacts(contactsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as ContactRow[]);
+        setSnapshots(
+          snapshotsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as KpiSnapshotRow[]
+        );
+
+        const nextUsersMap: Record<string, string> = {};
+        usersSnap.docs.forEach((d) => {
+          const data = d.data() as UserDoc;
+          nextUsersMap[d.id] = safeText(data?.email) || d.id;
+        });
+        setUsersMap(nextUsersMap);
+
+        setTarget(targetData);
+        setTargetDraft({
+          revenueTarget: Number(targetData?.revenueTarget ?? 0),
+          studioFundTarget: Number(targetData?.studioFundTarget ?? 0),
+          newCasesTarget: Number(targetData?.newCasesTarget ?? 0),
+        });
+      } catch (e: any) {
+        setMsg((prev) => prev ?? (e?.message ?? "Error cargando indicadores"));
+      } finally {
+        setLoadingData(false);
+      }
+    })();
+  }, [user, currentPeriodKey]);
 
   const visibleCases = useMemo(() => cases, [cases]);
   const visibleCharges = useMemo(() => charges, [charges]);
@@ -747,15 +732,24 @@ export default function KpiPage() {
   }, [mergedSnapshots, historyRange]);
 
   const chartMaxGross = useMemo(() => {
-    return Math.max(1, ...chartSnapshots.map((s) => Number(s.totals?.chargesPaidGross ?? 0)));
+    return Math.max(
+      1,
+      ...chartSnapshots.map((s) => Number(s.totals?.chargesPaidGross ?? 0))
+    );
   }, [chartSnapshots]);
 
   const chartMaxFund = useMemo(() => {
-    return Math.max(1, ...chartSnapshots.map((s) => Number(s.totals?.chargesPaidStudioFund ?? 0)));
+    return Math.max(
+      1,
+      ...chartSnapshots.map((s) => Number(s.totals?.chargesPaidStudioFund ?? 0))
+    );
   }, [chartSnapshots]);
 
   const chartMaxOverdue = useMemo(() => {
-    return Math.max(1, ...chartSnapshots.map((s) => Number(s.totals?.overdueAmount ?? 0)));
+    return Math.max(
+      1,
+      ...chartSnapshots.map((s) => Number(s.totals?.overdueAmount ?? 0))
+    );
   }, [chartSnapshots]);
 
   const revenueProgress = useMemo(() => {
@@ -864,6 +858,50 @@ export default function KpiPage() {
     }
   }
 
+  async function handleGeneratePreviousMonthSnapshot() {
+    try {
+      setGeneratingManualSnapshot(true);
+      const result = await generarSnapshotManual(previousPeriodKey, true);
+
+      alert(`Snapshot generado: ${result.periodKey}`);
+
+      const snapshotsSnap = await getDocs(
+        query(collection(db, "kpi_snapshots"), orderBy("periodKey", "asc"), limit(120))
+      );
+
+      setSnapshots(
+        snapshotsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as KpiSnapshotRow[]
+      );
+    } catch (e: any) {
+      alert(`Error generando snapshot: ${e?.message ?? "desconocido"}`);
+    } finally {
+      setGeneratingManualSnapshot(false);
+    }
+  }
+
+  async function handleRebuildHistory() {
+    try {
+      setRebuildingHistory(true);
+
+      const firstPeriodKey = getEarliestCaseMonth(cases);
+      const result = await reconstruirHistoricoCompleto(firstPeriodKey, true);
+
+      alert(`Histórico reconstruido correctamente. Meses procesados: ${result.count}`);
+
+      const snapshotsSnap = await getDocs(
+        query(collection(db, "kpi_snapshots"), orderBy("periodKey", "asc"), limit(120))
+      );
+
+      setSnapshots(
+        snapshotsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as KpiSnapshotRow[]
+      );
+    } catch (e: any) {
+      alert(`Error reconstruyendo histórico: ${e?.message ?? "desconocido"}`);
+    } finally {
+      setRebuildingHistory(false);
+    }
+  }
+
   function exportKpiReport() {
     const rows = chartSnapshots.map((s) => [
       safeText(s.periodKey),
@@ -963,25 +1001,27 @@ export default function KpiPage() {
           </button>
 
           {role === "admin" ? (
-            <>
-              <button
-                type="button"
-                onClick={() => generarSnapshotManual(getPreviousMonthKey())}
-                disabled={busySnapshot}
-                className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {busySnapshot ? "Procesando..." : "Generar snapshot mes anterior"}
-              </button>
+            <button
+              type="button"
+              onClick={handleGeneratePreviousMonthSnapshot}
+              disabled={generatingManualSnapshot}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              {generatingManualSnapshot
+                ? "Generando snapshot..."
+                : "Generar snapshot mes anterior"}
+            </button>
+          ) : null}
 
-              <button
-                type="button"
-                onClick={() => reconstruirHistoricoCompleto(false)}
-                disabled={busySnapshot}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-              >
-                {busySnapshot ? "Procesando..." : "Reconstruir histórico completo"}
-              </button>
-            </>
+          {role === "admin" ? (
+            <button
+              type="button"
+              onClick={handleRebuildHistory}
+              disabled={rebuildingHistory}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+            >
+              {rebuildingHistory ? "Reconstruyendo..." : "Reconstruir histórico completo"}
+            </button>
           ) : null}
         </div>
       </div>
