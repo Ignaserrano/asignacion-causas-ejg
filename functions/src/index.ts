@@ -1133,6 +1133,8 @@ export const adminListAuthUsers = onCall(async (request) => {
   return { users };
 });
 
+export { saveMonthlyKpiSnapshot, generateKpiSnapshotManual, rebuildKpiSnapshotHistory } from "./kpiSnapshots";
+
 export const adminEnsureUserProfile = onCall(async (request) => {
   await assertAdmin(request);
 
