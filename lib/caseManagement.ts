@@ -50,6 +50,11 @@ export type ManagementMeta = {
   deptoJudicial?: string;
   status?: CaseStatus;
 
+  tribunalAlzada?: string;
+  otherOrganism?: string;
+  claimAmount?: number | null;
+  claimAmountDate?: string;
+
   archiveRequest?: {
     requestedAt?: any;
     requestedByUid?: string;

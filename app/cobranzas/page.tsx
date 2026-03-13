@@ -27,6 +27,7 @@ import {
   type ChargeCurrency,
   type ChargeItem,
 } from "@/lib/charges";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type MainCaseRow = {
   id: string;
@@ -1370,6 +1371,7 @@ export default function CobranzasPage() {
           />
         ) : null}
       </Modal>
+      <ScrollToTopButton />
     </AppShell>
   );
 }

@@ -25,6 +25,7 @@ import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage
 
 import AppShell from "@/components/AppShell";
 import ContactForm, { CreatedContact } from "@/components/contacts/ContactForm";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 import { auth, db, storage } from "@/lib/firebase";
 import {
   ensureManagementInitialized,
@@ -123,6 +124,11 @@ type LawyerOption = {
   email: string;
 };
 
+type QuickCaseRow = {
+  id: string;
+  caratulaTentativa?: string;
+};
+
 type MetaDraft = Partial<ManagementMeta> & {
   caratulaTentativa?: string;
 };
@@ -175,6 +181,106 @@ type CasePaidChargeRow = {
   };
 };
 
+const LOGS_PER_PAGE = 25;
+
+const NACIONAL_FUEROS = ["Comercial", "Trabajo", "Civil", "Criminal y Correccional"];
+
+const FEDERAL_FUEROS = [
+  "Penal Económico",
+  "Civil y Comercial Federal",
+  "Contencioso Administrativo Federal",
+  "Criminal y Correccional Federal",
+  "Justicia Federal de Bahía Blanca",
+  "Justicia Federal de Comodoro Rivadavia",
+  "Justicia Federal de Córdoba",
+  "Justicia Federal de Corrientes",
+  "Justicia Federal de General Roca",
+  "Justicia Federal de La Plata",
+  "Justicia Federal de Mar del Plata",
+  "Justicia Federal de Mendoza",
+  "Justicia Federal de Entre Ríos",
+  "Justicia Federal de Santa Fe",
+  "Justicia Federal de Misiones",
+  "Justicia Federal de Resistencia",
+  "Justicia Federal de Salta",
+  "Justicia Federal de San Martín",
+  "Justicia Federal de Tucumán",
+];
+
+const CABA_FUEROS = [
+  "Cont. Adm., Tributario y de RC",
+  "Penal, Contr. y de Faltas",
+];
+
+const PROVINCIA_FUEROS = [
+  "civil y comercial",
+  "contencioso administrativo",
+  "familia",
+  "juzgados de paz",
+  "penal",
+  "trabajo",
+];
+
+const PROVINCIA_DEPTOS = [
+  "Avellaneda-Lanús",
+  "Azul",
+  "Bahía Blanca",
+  "Dolores",
+  "Junín",
+  "La Matanza",
+  "La Plata",
+  "Lomas de Zamora",
+  "Mar del Plata",
+  "Mercedes",
+  "Moreno-Gral. Rodríguez",
+  "Morón",
+  "Necochea",
+  "Pergamino",
+  "Quilmes",
+  "San Isidro",
+  "San Martín",
+  "San Nicolás",
+  "Trenque Lauquen",
+  "Zárate-Campana",
+];
+
+function buildNumberedOptions(prefix: string, from: number, to: number) {
+  return Array.from({ length: to - from + 1 }, (_, i) => `${prefix} ${from + i}`);
+}
+
+function getFueroOptions(jurisdiccion?: string) {
+  if (jurisdiccion === "nacional") return NACIONAL_FUEROS;
+  if (jurisdiccion === "federal") return FEDERAL_FUEROS;
+  if (jurisdiccion === "caba") return CABA_FUEROS;
+  if (jurisdiccion === "provincia_bs_as") return PROVINCIA_FUEROS;
+  return [];
+}
+
+function getCourtOptions(jurisdiccion?: string, fuero?: string) {
+  if (jurisdiccion === "nacional") {
+    if (fuero === "Trabajo") {
+      return buildNumberedOptions("Juzgado Nacional del Trabajo N°", 1, 80);
+    }
+    if (fuero === "Civil") {
+      return buildNumberedOptions("Juzgado Nacional en lo Civil N°", 1, 110);
+    }
+    if (fuero === "Comercial") {
+      return buildNumberedOptions("Juzgado Nacional en lo Comercial N°", 1, 31);
+    }
+  }
+
+  if (jurisdiccion === "caba") {
+    if (fuero === "Cont. Adm., Tributario y de RC") {
+      return buildNumberedOptions("Juzgado CAYT N°", 1, 27);
+    }
+    if (fuero === "Penal, Contr. y de Faltas") {
+      return buildNumberedOptions("Juzgado Penal CABA N°", 1, 30);
+    }
+  }
+
+  return [];
+}
+
 function formatDateFromSeconds(seconds?: number) {
   if (!seconds) return "-";
   return new Date(seconds * 1000).toLocaleString("es-AR");
@@ -205,8 +311,17 @@ function fmtMoney(n?: number, currency?: string) {
   return `${Number(n ?? 0).toLocaleString("es-AR")} ${currency ?? ""}`.trim();
 }
 
+function fmtAmount(n?: number) {
+  if (typeof n !== "number" || Number.isNaN(n)) return "-";
+  return Number(n).toLocaleString("es-AR");
+}
+
 function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
+}
+
+function safeText(v: any) {
+  return String(v ?? "").trim();
 }
 
 function valueOrDash(v?: string | null) {
@@ -265,38 +380,6 @@ const LOGTYPE_LABEL: Record<LogType, string> = {
   sentencia: "Sentencia",
   recordatorio: "Recordatorio",
 };
-
-const PROVINCIA_FUEROS = [
-  "civil y comercial",
-  "contencioso administrativo",
-  "familia",
-  "juzgados de paz",
-  "penal",
-  "trabajo",
-];
-
-const PROVINCIA_DEPTOS = [
-  "Avellaneda-Lanús",
-  "Azul",
-  "Bahía Blanca",
-  "Dolores",
-  "Junín",
-  "La Matanza",
-  "La Plata",
-  "Lomas de Zamora",
-  "Mar del Plata",
-  "Mercedes",
-  "Moreno-Gral. Rodríguez",
-  "Morón",
-  "Necochea",
-  "Pergamino",
-  "Quilmes",
-  "San Isidro",
-  "San Martín",
-  "San Nicolás",
-  "Trenque Lauquen",
-  "Zárate-Campana",
-];
 
 function roleLabel(role: PartyRole) {
   switch (role) {
@@ -375,6 +458,11 @@ export default function ManageCasePage() {
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
+  const [myCases, setMyCases] = useState<QuickCaseRow[]>([]);
+  const [quickSearch, setQuickSearch] = useState("");
+  const [quickSearchFocused, setQuickSearchFocused] = useState(false);
+  const [quickSearchSelectedIndex, setQuickSearchSelectedIndex] = useState(0);
+
   const [msg, setMsg] = useState<string | null>(null);
   const [loadingShell, setLoadingShell] = useState(true);
 
@@ -384,12 +472,15 @@ export default function ManageCasePage() {
 
   const [parties, setParties] = useState<Party[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logsPage, setLogsPage] = useState(1);
 
   const [involvedEmails, setInvolvedEmails] = useState<string[]>([]);
   const [assignedLawyerEmails, setAssignedLawyerEmails] = useState<string[]>([]);
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
-  const [metaDraft, setMetaDraft] = useState<MetaDraft>({});
+ const [metaDraft, setMetaDraft] = useState({
+  claimAmount: "",
+});
 
   const [lawyersModalOpen, setLawyersModalOpen] = useState(false);
   const [allLawyers, setAllLawyers] = useState<LawyerOption[]>([]);
@@ -406,6 +497,8 @@ export default function ManageCasePage() {
     null
   );
   const [contactError, setContactError] = useState<string | null>(null);
+  const [contactSelectedIndex, setContactSelectedIndex] = useState(0);
+  const [contactFocused, setContactFocused] = useState(false);
 
   const [createContactModalOpen, setCreateContactModalOpen] = useState(false);
 
@@ -471,6 +564,35 @@ export default function ManageCasePage() {
     return () => unsub();
   }, [router]);
 
+  useEffect(() => {
+    (async () => {
+      if (!user) {
+        setMyCases([]);
+        return;
+      }
+
+      try {
+        const qCases = query(
+          collection(db, "cases"),
+          where("confirmedAssigneesUids", "array-contains", user.uid),
+          orderBy("createdAt", "desc"),
+          limit(200)
+        );
+
+        const snap = await getDocs(qCases);
+
+        const rows = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        })) as QuickCaseRow[];
+
+        setMyCases(rows);
+      } catch {
+        setMyCases([]);
+      }
+    })();
+  }, [user]);
+
   async function doLogout() {
     await signOut(auth);
     router.replace("/login");
@@ -491,8 +613,8 @@ export default function ManageCasePage() {
   }, [user, caseId]);
 
   useEffect(() => {
+    if (!user) return;
     (async () => {
-      if (!user) return;
       try {
         await ensureManagementInitialized({ caseId, uid: user.uid, email: user.email ?? "" });
       } catch (e: any) {
@@ -530,11 +652,16 @@ export default function ManageCasePage() {
     return () => unsub();
   }, [user, caseId]);
 
+  useEffect(() => {
+    setLogsPage(1);
+  }, [logs.length, caseId]);
+
   const canWrite = useMemo(() => {
+    if (role === "admin") return true;
     const u = user?.uid;
     const assignees = caseDoc?.confirmedAssigneesUids ?? [];
     return !!u && assignees.includes(u);
-  }, [user, caseDoc]);
+  }, [user, caseDoc, role]);
 
   useEffect(() => {
     if (!caseDoc) return;
@@ -627,6 +754,7 @@ export default function ManageCasePage() {
 
         if (!alive) return;
         setContactResults(filtered.slice(0, 10));
+        setContactSelectedIndex(0);
       } catch (e: any) {
         if (!alive) return;
         setContactResults([]);
@@ -642,18 +770,55 @@ export default function ManageCasePage() {
     };
   }, [contactQuery]);
 
+  useEffect(() => {
+    setQuickSearchSelectedIndex(0);
+  }, [quickSearch]);
+
   function selectContact(c: { id: string } & ContactDoc) {
     const fullName = getContactFullName(c);
     setSelectedContact(c);
     setContactQuery(fullName);
     setContactResults([]);
+    setContactSelectedIndex(0);
   }
 
   function clearSelectedContact() {
     setSelectedContact(null);
     setContactQuery("");
     setContactResults([]);
+    setContactSelectedIndex(0);
     setNewPartyRole("actor");
+  }
+
+  function handleContactSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (contactResults.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setContactSelectedIndex((prev) =>
+        prev + 1 >= contactResults.length ? 0 : prev + 1
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setContactSelectedIndex((prev) =>
+        prev - 1 < 0 ? contactResults.length - 1 : prev - 1
+      );
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const picked = contactResults[Math.min(contactSelectedIndex, contactResults.length - 1)];
+      if (picked) selectContact(picked);
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setContactResults([]);
+    }
   }
 
   function handleContactCreated(contact: CreatedContact) {
@@ -678,52 +843,58 @@ export default function ManageCasePage() {
       jurisdiccion: meta?.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as",
       deptoJudicial: meta?.deptoJudicial ?? "",
       status: meta?.status ?? "preliminar",
+      tribunalAlzada: String((meta as any)?.tribunalAlzada ?? ""),
+      otherOrganism: String((meta as any)?.otherOrganism ?? ""),
+      claimAmount:
+        typeof (meta as any)?.claimAmount === "number" ? (meta as any).claimAmount : null,
+      claimAmountDate: String((meta as any)?.claimAmountDate ?? ""),
     });
     setMetaModalOpen(true);
   }
 
   async function openLawyersModal() {
-  if (role !== "admin") return;
+    if (role !== "admin") return;
 
-  setLawyersModalOpen(true);
-  setLoadingLawyers(true);
+    setLawyersModalOpen(true);
+    setLoadingLawyers(true);
 
-  try {
-    const currentAssigned = Array.from(
-      new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))
-    );
+    try {
+      const currentAssigned = Array.from(
+        new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))
+      );
 
-    const snap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
-    const lawyers = snap.docs
-      .map((d) => ({
-        uid: d.id,
-        ...(d.data() as UserDoc),
-      }))
-      .filter((u) => {
-        const roleValue = String(u.role ?? "").trim();
-        return (
-          roleValue === "abogado" ||
-          roleValue === "lawyer" ||
-          roleValue === "admin" ||
-          currentAssigned.includes(u.uid)
-        );
-      })
-      .map((u) => ({
-        uid: u.uid,
-        email: String(u.email ?? "").trim(),
-      }))
-      .filter((u) => u.uid && u.email);
+      const snap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
+      const lawyers = snap.docs
+        .map((d) => ({
+          uid: d.id,
+          ...(d.data() as UserDoc),
+        }))
+        .filter((u) => {
+          const roleValue = String(u.role ?? "").trim();
+          return (
+            roleValue === "abogado" ||
+            roleValue === "lawyer" ||
+            roleValue === "admin" ||
+            currentAssigned.includes(u.uid)
+          );
+        })
+        .map((u) => ({
+          uid: u.uid,
+          email: String(u.email ?? "").trim(),
+        }))
+        .filter((u) => u.uid && u.email);
 
-    setAllLawyers(lawyers);
-    setSelectedAssignedUids(currentAssigned);
-  } catch (e: any) {
-    alert(e?.message ?? "No pude cargar los abogados.");
-    setAllLawyers([]);
-    setSelectedAssignedUids(Array.from(new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))));
-  } finally {
-    setLoadingLawyers(false);
+      setAllLawyers(lawyers);
+      setSelectedAssignedUids(currentAssigned);
+    } catch (e: any) {
+      alert(e?.message ?? "No pude cargar los abogados.");
+      setAllLawyers([]);
+      setSelectedAssignedUids(Array.from(new Set((caseDoc?.confirmedAssigneesUids ?? []).filter(Boolean))));
+    } finally {
+      setLoadingLawyers(false);
+    }
   }
-}
+
   function toggleAssignedLawyer(uid: string) {
     setSelectedAssignedUids((prev) =>
       prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]
@@ -794,7 +965,7 @@ export default function ManageCasePage() {
 
     try {
       await updateDoc(managementMetaRef(caseId), {
-        ...patch,
+        ...(patch as any),
         updatedAt: serverTimestamp(),
       });
 
@@ -843,18 +1014,39 @@ export default function ManageCasePage() {
     const nextJurisdiccion =
       (metaDraft.jurisdiccion as any) ?? caseDoc?.jurisdiccion ?? "provincia_bs_as";
 
+    let nextFuero = String(metaDraft.fuero ?? "");
+    let nextCourt = String(metaDraft.court ?? "");
+
+    const availableFueros = getFueroOptions(nextJurisdiccion);
+    if (availableFueros.length > 0 && nextFuero && !availableFueros.includes(nextFuero)) {
+      nextFuero = "";
+      nextCourt = "";
+    }
+
+    const availableCourts = getCourtOptions(nextJurisdiccion, nextFuero);
+    if (availableCourts.length > 0 && nextCourt && !availableCourts.includes(nextCourt)) {
+      nextCourt = "";
+    }
+
     await saveMeta(
       {
         physicalFolder: String(metaDraft.physicalFolder ?? ""),
         driveFolderUrl: String(metaDraft.driveFolderUrl ?? ""),
         expedienteNumber: String(metaDraft.expedienteNumber ?? ""),
-        court: String(metaDraft.court ?? ""),
-        fuero: String(metaDraft.fuero ?? ""),
+        court: nextCourt,
+        fuero: nextFuero,
         jurisdiccion: nextJurisdiccion,
         deptoJudicial:
           nextJurisdiccion === "provincia_bs_as" ? String(metaDraft.deptoJudicial ?? "") : "",
         status: to,
-      },
+        tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
+        otherOrganism: String(metaDraft.otherOrganism ?? ""),
+       claimAmount:
+  metaDraft.claimAmount == null
+    ? null
+    : Number(metaDraft.claimAmount),
+        claimAmountDate: String(metaDraft.claimAmountDate ?? ""),
+      } as any,
       { from, to },
       {
         caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
@@ -980,6 +1172,50 @@ export default function ManageCasePage() {
   function handleCalendarEndChange(value: string) {
     setCalendarEnd(value);
     setCalendarEndManuallyEdited(Boolean(value));
+  }
+
+  function openCaseFromQuickSearch(targetCaseId: string) {
+    setQuickSearch("");
+    setQuickSearchFocused(false);
+    setQuickSearchSelectedIndex(0);
+    router.push(`/cases/manage/${targetCaseId}`);
+  }
+
+  function handleQuickSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (quickSearchResults.length === 0) return;
+      setQuickSearchSelectedIndex((prev) =>
+        prev + 1 >= quickSearchResults.length ? 0 : prev + 1
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (quickSearchResults.length === 0) return;
+      setQuickSearchSelectedIndex((prev) =>
+        prev - 1 < 0 ? quickSearchResults.length - 1 : prev - 1
+      );
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (quickSearchResults.length > 0) {
+        const picked =
+          quickSearchResults[
+            Math.min(quickSearchSelectedIndex, quickSearchResults.length - 1)
+          ];
+        if (picked) openCaseFromQuickSearch(picked.id);
+      }
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setQuickSearchFocused(false);
+    }
   }
 
   async function addLogEntry() {
@@ -1160,6 +1396,22 @@ export default function ManageCasePage() {
     }
   }
 
+  function handleLogFormKeyDown(
+    e:
+      | React.KeyboardEvent<HTMLInputElement>
+      | React.KeyboardEvent<HTMLSelectElement>
+      | React.KeyboardEvent<HTMLTextAreaElement>
+  ) {
+    if (e.key !== "Enter") return;
+    if (e.shiftKey) return;
+    if ((e.target as HTMLElement).tagName.toLowerCase() === "textarea") return;
+
+    e.preventDefault();
+    if (!savingLog && canWrite) {
+      void addLogEntry();
+    }
+  }
+
   async function submitArchiveRequest() {
     if (!user) return;
     if (!canWrite) return alert("Sin permisos.");
@@ -1303,6 +1555,48 @@ export default function ManageCasePage() {
     return sortedCaseCharges.reduce((sum, row) => sum + getChargeUserNetAmount(row, user?.uid), 0);
   }, [sortedCaseCharges, user?.uid]);
 
+  const quickSearchResults = useMemo(() => {
+    const term = safeLower(quickSearch);
+    if (!term) return [];
+
+    return [...myCases]
+      .filter((c) => {
+        if (c.id === caseId) return false;
+        const caratula = safeLower(c.caratulaTentativa);
+        return Boolean(caratula) && caratula.includes(term);
+      })
+      .sort((a, b) =>
+        safeText(a.caratulaTentativa).localeCompare(safeText(b.caratulaTentativa), "es")
+      )
+      .slice(0, 8);
+  }, [myCases, quickSearch, caseId]);
+
+  const availableMetaFueroOptions = useMemo(() => {
+    return getFueroOptions(
+      metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as"
+    );
+  }, [metaDraft.jurisdiccion, caseDoc?.jurisdiccion]);
+
+  const availableMetaCourtOptions = useMemo(() => {
+    return getCourtOptions(
+      metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as",
+      String(metaDraft.fuero ?? "")
+    );
+  }, [metaDraft.jurisdiccion, caseDoc?.jurisdiccion, metaDraft.fuero]);
+
+  const totalLogPages = Math.max(1, Math.ceil(logs.length / LOGS_PER_PAGE));
+
+  const paginatedLogs = useMemo(() => {
+    const start = (logsPage - 1) * LOGS_PER_PAGE;
+    return logs.slice(start, start + LOGS_PER_PAGE);
+  }, [logs, logsPage]);
+
+  useEffect(() => {
+    if (logsPage > totalLogPages) {
+      setLogsPage(totalLogPages);
+    }
+  }, [logsPage, totalLogPages]);
+
   return (
     <AppShell
       title="Gestionar causa"
@@ -1338,6 +1632,66 @@ export default function ManageCasePage() {
         </div>
       ) : (
         <>
+          <div className="mb-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+              Buscador rápido de causas
+            </div>
+
+            <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              Buscá otra causa en la que intervenís para saltar directo a su gestión.
+            </div>
+
+            <div className="relative mt-3">
+              <input
+                value={quickSearch}
+                onChange={(e) => setQuickSearch(e.target.value)}
+                onFocus={() => setQuickSearchFocused(true)}
+                onBlur={() => {
+                  setTimeout(() => setQuickSearchFocused(false), 150);
+                }}
+                onKeyDown={handleQuickSearchKeyDown}
+                placeholder="Ej.: Pérez c/ Gómez s/ alimentos"
+                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-900 placeholder:text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400"
+              />
+
+              {quickSearchFocused && safeText(quickSearch) ? (
+                <div className="absolute z-20 mt-2 w-full overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-900">
+                  {quickSearchResults.length === 0 ? (
+                    <div className="px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                      No hay coincidencias.
+                    </div>
+                  ) : (
+                    quickSearchResults.map((item, idx) => {
+                      const isActive = idx === quickSearchSelectedIndex;
+
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setQuickSearchSelectedIndex(idx)}
+                          onClick={() => openCaseFromQuickSearch(item.id)}
+                          className={`block w-full border-b border-gray-100 px-4 py-3 text-left transition last:border-b-0 dark:border-gray-800 ${
+                            isActive
+                              ? "bg-gray-100 dark:bg-gray-800"
+                              : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                          }`}
+                        >
+                          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+                            {item.caratulaTentativa || "(sin carátula)"}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                            Abrir gestión de la causa
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs text-gray-600 dark:text-gray-300">Causa</div>
@@ -1455,6 +1809,22 @@ export default function ManageCasePage() {
                   <span>{valueOrDash(meta?.deptoJudicial)}</span>
                 </div>
                 <div>
+                  <span className="font-black">Tribunal de Alzada:</span>{" "}
+                  <span>{valueOrDash((meta as any)?.tribunalAlzada)}</span>
+                </div>
+                <div>
+                  <span className="font-black">Otro Organismo interviniente:</span>{" "}
+                  <span>{valueOrDash((meta as any)?.otherOrganism)}</span>
+                </div>
+                <div>
+                  <span className="font-black">Monto del juicio:</span>{" "}
+                  <span>${fmtAmount((meta as any)?.claimAmount)}</span>
+                </div>
+                <div>
+                  <span className="font-black">Fecha determinación monto:</span>{" "}
+                  <span>{valueOrDash((meta as any)?.claimAmountDate)}</span>
+                </div>
+                <div>
                   <span className="font-black">Estado:</span>{" "}
                   <span>{STATUS_LABEL[(meta?.status ?? "preliminar") as CaseStatus] ?? "-"}</span>
                 </div>
@@ -1542,6 +1912,11 @@ export default function ManageCasePage() {
                         className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                         placeholder="Buscar por apellido, nombre o razón social"
                         value={contactQuery}
+                        onFocus={() => setContactFocused(true)}
+                        onBlur={() => {
+                          setTimeout(() => setContactFocused(false), 150);
+                        }}
+                        onKeyDown={handleContactSearchKeyDown}
                         onChange={(e) => {
                           setContactQuery(e.target.value);
                           setSelectedContact(null);
@@ -1574,17 +1949,24 @@ export default function ManageCasePage() {
                       </div>
                     ) : null}
 
-                    {contactResults.length > 0 ? (
+                    {contactFocused && contactResults.length > 0 ? (
                       <div className="absolute z-20 mt-2 w-full rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-800 dark:bg-gray-900">
-                        {contactResults.map((c) => {
+                        {contactResults.map((c, idx) => {
                           const fullName = getContactFullName(c);
+                          const isActive = idx === contactSelectedIndex;
 
                           return (
                             <button
                               key={c.id}
                               type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onMouseEnter={() => setContactSelectedIndex(idx)}
                               onClick={() => selectContact(c)}
-                              className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                              className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left ${
+                                isActive
+                                  ? "bg-gray-100 dark:bg-gray-800"
+                                  : "hover:bg-gray-50 dark:hover:bg-gray-800/40"
+                              }`}
                               disabled={!canWrite}
                             >
                               <div className="text-sm font-black text-gray-900 dark:text-gray-100">
@@ -1689,6 +2071,7 @@ export default function ManageCasePage() {
                 <select
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logType}
+                  onKeyDown={handleLogFormKeyDown}
                   onChange={(e) => {
                     const next = e.target.value as LogType;
                     setLogType(next);
@@ -1714,6 +2097,7 @@ export default function ManageCasePage() {
                 <input
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={logTitle}
+                  onKeyDown={handleLogFormKeyDown}
                   onChange={(e) => setLogTitle(e.target.value)}
                   disabled={!canWrite}
                   placeholder="Ej: Se contestó traslado / Vence plazo / Audiencia…"
@@ -1743,6 +2127,7 @@ export default function ManageCasePage() {
                       type="datetime-local"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarStart}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) => handleCalendarStartChange(e.target.value)}
                       disabled={!canWrite}
                     />
@@ -1756,6 +2141,7 @@ export default function ManageCasePage() {
                       type="datetime-local"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarEnd}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) => handleCalendarEndChange(e.target.value)}
                       disabled={!canWrite}
                     />
@@ -1768,6 +2154,7 @@ export default function ManageCasePage() {
                     <input
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarLocation}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) => setCalendarLocation(e.target.value)}
                       disabled={!canWrite}
                       placeholder="Lugar, sala, juzgado, enlace o cualquier dato útil"
@@ -1786,6 +2173,7 @@ export default function ManageCasePage() {
                       type="datetime-local"
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarStart}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) => setCalendarStart(e.target.value)}
                       disabled={!canWrite}
                     />
@@ -1798,6 +2186,7 @@ export default function ManageCasePage() {
                     <input
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={calendarLocation}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) => setCalendarLocation(e.target.value)}
                       disabled={!canWrite}
                       placeholder="Lugar, enlace o cualquier dato útil"
@@ -1863,6 +2252,7 @@ export default function ManageCasePage() {
                     <select
                       className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                       value={sentResult}
+                      onKeyDown={handleLogFormKeyDown}
                       onChange={(e) =>
                         setSentResult(e.target.value as "ganado" | "perdido" | "empatado")
                       }
@@ -1889,14 +2279,16 @@ export default function ManageCasePage() {
           <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-black text-gray-900 dark:text-gray-100">Bitácora</div>
-              <div className="text-xs text-gray-600 dark:text-gray-300">{logs.length} entradas</div>
+              <div className="text-xs text-gray-600 dark:text-gray-300">
+                {logs.length} entradas · página {logsPage} de {totalLogPages}
+              </div>
             </div>
 
             <div className="mt-3">
               {logs.length === 0 ? (
                 <div className="py-2 text-sm text-gray-700 dark:text-gray-200">Sin entradas.</div>
               ) : (
-                logs.map((l, idx) => {
+                paginatedLogs.map((l, idx) => {
                   const cls = logTypeColor(l.type);
                   const createdAt = l.createdAt?.seconds;
 
@@ -2011,6 +2403,32 @@ export default function ManageCasePage() {
               )}
             </div>
 
+            {logs.length > 0 ? (
+              <div className="mt-4 flex items-center justify-center gap-2 border-t border-gray-200 pt-4 dark:border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setLogsPage((p) => Math.max(1, p - 1))}
+                  disabled={logsPage <= 1}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  Anterior
+                </button>
+
+                <div className="px-3 text-sm font-black text-gray-700 dark:text-gray-200">
+                  {logsPage} / {totalLogPages}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setLogsPage((p) => Math.min(totalLogPages, p + 1))}
+                  disabled={logsPage >= totalLogPages}
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                >
+                  Siguiente
+                </button>
+              </div>
+            ) : null}
+
             <div className="mt-4 border-t border-gray-200 pt-4 dark:border-gray-800">
               {!archiveRequestDone ? (
                 <>
@@ -2122,35 +2540,21 @@ export default function ManageCasePage() {
 
             <label className="grid gap-1">
               <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                Juzgado
-              </span>
-              <input
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                value={String(metaDraft.court ?? "")}
-                onChange={(e) => setMetaDraft((m) => ({ ...m, court: e.target.value }))}
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
                 Jurisdicción
               </span>
               <select
                 className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                 value={String(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as")}
-                onChange={(e) =>
-                  setMetaDraft((m) => {
-                    const next = e.target.value as any;
-                    return {
-                      ...m,
-                      jurisdiccion: next,
-                      fuero: next === "provincia_bs_as" ? String(m.fuero ?? "") : String(m.fuero ?? ""),
-                      deptoJudicial: next === "provincia_bs_as" ? String(m.deptoJudicial ?? "") : "",
-                    };
-                  })
-                }
+                onChange={(e) => {
+                  const next = e.target.value as any;
+                  setMetaDraft((m) => ({
+                    ...m,
+                    jurisdiccion: next,
+                    fuero: "",
+                    court: "",
+                    deptoJudicial: next === "provincia_bs_as" ? String(m.deptoJudicial ?? "") : "",
+                  }));
+                }}
               >
                 <option value="nacional">Nacional</option>
                 <option value="federal">Federal</option>
@@ -2158,37 +2562,76 @@ export default function ManageCasePage() {
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
               </select>
             </label>
+          </div>
 
-            {(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion) === "provincia_bs_as" ? (
-              <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                  Fuero
-                </span>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Fuero
+              </span>
+
+              {availableMetaFueroOptions.length > 0 ? (
                 <select
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={String(metaDraft.fuero ?? "")}
-                  onChange={(e) => setMetaDraft((m) => ({ ...m, fuero: e.target.value }))}
+                  onChange={(e) => {
+                    const nextFuero = e.target.value;
+                    const allowedCourts = getCourtOptions(
+                      metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion ?? "provincia_bs_as",
+                      nextFuero
+                    );
+                    setMetaDraft((m) => ({
+                      ...m,
+                      fuero: nextFuero,
+                      court:
+                        allowedCourts.length > 0 && !allowedCourts.includes(String(m.court ?? ""))
+                          ? ""
+                          : m.court,
+                    }));
+                  }}
                 >
                   <option value="">Seleccionar…</option>
-                  {PROVINCIA_FUEROS.map((fuero) => (
+                  {availableMetaFueroOptions.map((fuero) => (
                     <option key={fuero} value={fuero}>
-                      {fuero.charAt(0).toUpperCase() + fuero.slice(1)}
+                      {fuero}
                     </option>
                   ))}
                 </select>
-              </label>
-            ) : (
-              <label className="grid gap-1">
-                <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                  Fuero
-                </span>
+              ) : (
                 <input
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   value={String(metaDraft.fuero ?? "")}
                   onChange={(e) => setMetaDraft((m) => ({ ...m, fuero: e.target.value }))}
                 />
-              </label>
-            )}
+              )}
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Juzgado
+              </span>
+
+              {availableMetaCourtOptions.length > 0 ? (
+                <select
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={String(metaDraft.court ?? "")}
+                  onChange={(e) => setMetaDraft((m) => ({ ...m, court: e.target.value }))}
+                >
+                  <option value="">Seleccionar…</option>
+                  {availableMetaCourtOptions.map((court) => (
+                    <option key={court} value={court}>
+                      {court}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                  value={String(metaDraft.court ?? "")}
+                  onChange={(e) => setMetaDraft((m) => ({ ...m, court: e.target.value }))}
+                />
+              )}
+            </label>
           </div>
 
           {(metaDraft.jurisdiccion ?? caseDoc?.jurisdiccion) === "provincia_bs_as" ? (
@@ -2210,6 +2653,62 @@ export default function ManageCasePage() {
               </select>
             </label>
           ) : null}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Tribunal de Alzada
+              </span>
+              <input
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={String(metaDraft.tribunalAlzada ?? "")}
+                onChange={(e) => setMetaDraft((m) => ({ ...m, tribunalAlzada: e.target.value }))}
+              />
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Otro Organismo interviniente
+              </span>
+              <input
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={String(metaDraft.otherOrganism ?? "")}
+                onChange={(e) => setMetaDraft((m) => ({ ...m, otherOrganism: e.target.value }))}
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Monto del juicio
+              </span>
+              <input
+  type="number"
+  step="0.01"
+  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+  value={metaDraft.claimAmount ?? ""}
+  onChange={(e) =>
+    setMetaDraft((m) => ({
+      ...m,
+      claimAmount: e.target.value === "" ? null : Number(e.target.value),
+    }))
+  }
+/>
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Fecha de determinación del monto
+              </span>
+              <input
+                type="date"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={String(metaDraft.claimAmountDate ?? "")}
+                onChange={(e) => setMetaDraft((m) => ({ ...m, claimAmountDate: e.target.value }))}
+              />
+            </label>
+          </div>
 
           <label className="grid gap-1">
             <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
@@ -2472,6 +2971,8 @@ export default function ManageCasePage() {
           </div>
         )}
       </Modal>
+
+      <ScrollToTopButton />
     </AppShell>
   );
 }

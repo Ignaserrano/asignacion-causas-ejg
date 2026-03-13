@@ -18,6 +18,10 @@ import {
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import {
+  finalizeDirectAssignment,
+  inviteCaseReplacement,
+} from "@/lib/cases";
 
 type CaseDoc = {
   caratulaTentativa?: string;
@@ -32,19 +36,33 @@ type CaseDoc = {
   confirmedAssigneesUids?: string[];
   broughtByUid?: string;
   broughtByParticipates?: boolean;
+  directAssignmentNeedsReview?: boolean;
+  manualReplacementNeeded?: boolean;
+  manualReplacementReason?: string;
+  fallbackReplacementMode?: boolean;
 };
 
 type InviteDoc = {
   invitedUid?: string;
   invitedEmail?: string;
   status?: "pending" | "accepted" | "rejected";
-  mode?: "auto" | "direct";
+  mode?: "auto" | "direct" | "manual_fallback";
   directJustification?: string;
   invitedAt?: any;
   respondedAt?: any;
+  createdByUid?: string;
 };
 
 type UserDoc = { email?: string };
+
+type UserOption = {
+  uid: string;
+  email: string;
+};
+
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr.filter(Boolean)));
+}
 
 function Badge({
   children,
@@ -80,20 +98,23 @@ export default function CaseDetailPage() {
   const params = useParams<{ id: string }>();
   const caseId = params?.id;
 
-  // shell
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // page
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
   const [c, setC] = useState<CaseDoc | null>(null);
   const [invites, setInvites] = useState<Array<{ id: string } & InviteDoc>>([]);
 
-  // uid -> email
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
+  const [lawyerOptions, setLawyerOptions] = useState<UserOption[]>([]);
+
+  const [replacementUid, setReplacementUid] = useState("");
+  const [replacementJustification, setReplacementJustification] = useState("");
+  const [sendingReplacement, setSendingReplacement] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
@@ -104,7 +125,6 @@ export default function CaseDetailPage() {
 
       setUser(u);
 
-      // rol
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -113,7 +133,6 @@ export default function CaseDetailPage() {
         setRole("lawyer");
       }
 
-      // pending invites para tabs
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -124,6 +143,22 @@ export default function CaseDetailPage() {
         setPendingInvites(snap.size);
       } catch {
         setPendingInvites(0);
+      }
+
+      try {
+        const usersSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
+        const list = usersSnap.docs
+          .map((d) => {
+            const data = d.data() as any;
+            return {
+              uid: d.id,
+              email: String(data?.email ?? "").trim(),
+            };
+          })
+          .filter((x) => Boolean(x.email));
+        setLawyerOptions(list);
+      } catch {
+        setLawyerOptions([]);
       }
 
       if (!caseId) return;
@@ -154,7 +189,7 @@ export default function CaseDetailPage() {
           const list = snap.docs.map((d) => ({
             id: d.id,
             ...(d.data() as any),
-          })) as any;
+          })) as Array<{ id: string } & InviteDoc>;
           setInvites(list);
         },
         (err) => setMsg(err.message)
@@ -169,7 +204,6 @@ export default function CaseDetailPage() {
     return () => unsubAuth();
   }, [router, caseId]);
 
-  // cargar emails faltantes (confirmados + invitados + creador)
   useEffect(() => {
     const uids = new Set<string>();
 
@@ -207,8 +241,13 @@ export default function CaseDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c?.confirmedAssigneesUids, c?.broughtByUid, invites]);
 
-  const required = Number(c?.requiredAssigneesCount ?? 2);
-  const confirmedCount = (c?.confirmedAssigneesUids ?? []).length;
+  const confirmedCount = uniq(c?.confirmedAssigneesUids ?? []).length;
+
+  const required = useMemo(() => {
+    const explicitRequired = Number(c?.requiredAssigneesCount ?? 0);
+    return Math.max(explicitRequired || 2, confirmedCount, 1);
+  }, [c?.requiredAssigneesCount, confirmedCount]);
+
   const missingCount = Math.max(0, required - confirmedCount);
   const status = c?.status ?? "draft";
 
@@ -219,20 +258,100 @@ export default function CaseDetailPage() {
     return { pending, accepted, rejected };
   }, [invites]);
 
-  function getShareUrl() {
-    if (!caseId) return "";
-    return `${window.location.origin}/cases/${caseId}`;
+  const isCreator = !!user?.uid && !!c?.broughtByUid && user.uid === c.broughtByUid;
+  const isDirect = c?.assignmentMode === "direct";
+  const rejectedInvites = invites.filter((i) => i.status === "rejected");
+  const pendingInvitesInCase = invites.filter((i) => i.status === "pending").length;
+
+  const showManualPanel =
+    isCreator &&
+    status !== "assigned" &&
+    (
+      (isDirect && rejectedInvites.length > 0) ||
+      (!isDirect && Boolean(c?.manualReplacementNeeded))
+    );
+
+  const canCloseWithoutReplacement =
+    isDirect &&
+    confirmedCount >= 2 &&
+    pendingInvitesInCase === 0 &&
+    status !== "assigned";
+
+  const alreadyUsedUids = useMemo(() => {
+    return new Set(
+      [
+        ...(c?.confirmedAssigneesUids ?? []),
+        ...invites.map((i) => String(i.invitedUid ?? "")).filter(Boolean),
+      ].filter(Boolean)
+    );
+  }, [c?.confirmedAssigneesUids, invites]);
+
+  const availableReplacementOptions = lawyerOptions.filter((l) => {
+    if (l.uid === c?.broughtByUid) return false;
+    return !alreadyUsedUids.has(l.uid);
+  });
+
+  async function handleInviteReplacement() {
+    if (!caseId) return;
+    if (!replacementUid) {
+      alert("Seleccioná un abogado para invitar.");
+      return;
+    }
+
+    setSendingReplacement(true);
+    setMsg(null);
+
+    try {
+      await inviteCaseReplacement({
+        caseId,
+        newInvitedUid: replacementUid,
+        justification: replacementJustification.trim(),
+      });
+
+      setReplacementUid("");
+      setReplacementJustification("");
+      setMsg("✅ Reemplazo invitado correctamente.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "No se pudo invitar al reemplazo.");
+    } finally {
+      setSendingReplacement(false);
+    }
   }
 
-  function getShareText() {
-    const t = c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa";
-    const url = getShareUrl();
-    return `${t}\n${url}`;
+  async function handleFinalizeDirectAssignment() {
+    if (!caseId) return;
+
+    if (confirmedCount < 2) {
+      alert("No podés cerrar la asignación con menos de 2 abogados confirmados.");
+      return;
+    }
+
+    if (pendingInvitesInCase > 0) {
+      alert("No podés cerrar la asignación mientras haya invitaciones pendientes.");
+      return;
+    }
+
+    const ok = window.confirm(
+      "¿Confirmás que querés dar por asignada la causa con los abogados ya confirmados?"
+    );
+    if (!ok) return;
+
+    setFinalizing(true);
+    setMsg(null);
+
+    try {
+      await finalizeDirectAssignment({ caseId });
+      setMsg("✅ La causa quedó asignada con los confirmados actuales.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "No se pudo cerrar la asignación.");
+    } finally {
+      setFinalizing(false);
+    }
   }
 
   async function copyLink() {
     if (!caseId) return;
-    const url = getShareUrl();
+    const url = `${window.location.origin}/cases/${caseId}`;
     try {
       await navigator.clipboard.writeText(url);
       alert("Link copiado ✅");
@@ -243,7 +362,9 @@ export default function CaseDetailPage() {
 
   function shareWhatsApp() {
     if (!caseId) return;
-    const text = encodeURIComponent(getShareText());
+    const text = encodeURIComponent(
+      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${window.location.origin}/cases/${caseId}`
+    );
     window.open(`https://wa.me/?text=${text}`, "_blank", "noopener,noreferrer");
   }
 
@@ -254,7 +375,9 @@ export default function CaseDetailPage() {
       c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"
     );
 
-    const body = encodeURIComponent(getShareText());
+    const body = encodeURIComponent(
+      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${window.location.origin}/cases/${caseId}`
+    );
 
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
   }
@@ -276,8 +399,6 @@ export default function CaseDetailPage() {
         role={role}
         pendingInvites={pendingInvites}
         onLogout={doLogout}
-        
-      
       >
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ID inválido.
@@ -336,7 +457,6 @@ export default function CaseDetailPage() {
           <button
             onClick={shareWhatsApp}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-            title="Compartir por WhatsApp"
           >
             WhatsApp
           </button>
@@ -344,7 +464,6 @@ export default function CaseDetailPage() {
           <button
             onClick={shareEmail}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-            title="Compartir por email"
           >
             Email
           </button>
@@ -352,7 +471,6 @@ export default function CaseDetailPage() {
           <button
             onClick={printPdf}
             className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-            title="Imprimir / Guardar como PDF"
           >
             Imprimir / PDF
           </button>
@@ -407,36 +525,80 @@ export default function CaseDetailPage() {
             </div>
           </div>
 
-          <SectionTitle>Datos</SectionTitle>
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <div className="grid gap-3 text-sm">
-              <div>
-                <span className="font-black">Creado por:</span>{" "}
-                <span className="text-gray-800 dark:text-gray-100">
-                  {c.broughtByUid
-                    ? emailByUid[c.broughtByUid]
-                      ? `${emailByUid[c.broughtByUid]}${user?.uid === c.broughtByUid ? " (vos)" : ""}`
-                      : "Cargando..."
-                    : "-"}
-                </span>
+          {showManualPanel ? (
+            <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 p-4 shadow-sm dark:border-orange-800 dark:bg-orange-900/20">
+              <div className="text-sm font-black text-orange-950 dark:text-orange-100">
+                {isDirect
+                  ? "Gestión manual por rechazo en asignación directa"
+                  : "No hay reemplazo automático disponible por especialidad"}
               </div>
 
-              <div>
-                <span className="font-black">Jurisdicción:</span>{" "}
-                <span className="text-gray-800 dark:text-gray-100">{c.jurisdiccion ?? "-"}</span>
+              <div className="mt-2 text-sm text-orange-900 dark:text-orange-100">
+                {isDirect
+                  ? "En asignación directa no se reasigna automáticamente. Podés invitar otro abogado o, si ya hay al menos 2 confirmados y no quedan pendientes, cerrar la asignación con los actuales."
+                  : "No quedó ningún abogado disponible dentro de la especialidad. Podés invitar manualmente a otro abogado por fuera de la especialidad."}
               </div>
 
-              <div>
-                <span className="font-black">Objeto:</span>{" "}
-                <span className="text-gray-800 dark:text-gray-100">{c.objeto ?? "-"}</span>
-              </div>
+              <div className="mt-4 grid gap-3">
+                <label className="grid gap-1">
+                  <span className="text-xs font-extrabold text-orange-900 dark:text-orange-100">
+                    Invitar reemplazo
+                  </span>
+                  <select
+                    value={replacementUid}
+                    onChange={(e) => setReplacementUid(e.target.value)}
+                    className="rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-orange-700 dark:bg-gray-800 dark:text-gray-100"
+                  >
+                    <option value="">Seleccionar abogado…</option>
+                    {availableReplacementOptions.map((u) => (
+                      <option key={u.uid} value={u.uid}>
+                        {u.email}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-              <div>
-                <span className="font-black">Resumen:</span>{" "}
-                <span className="text-gray-800 dark:text-gray-100">{c.resumen ?? "-"}</span>
+                <label className="grid gap-1">
+                  <span className="text-xs font-extrabold text-orange-900 dark:text-orange-100">
+                    Justificación / nota (opcional)
+                  </span>
+                  <textarea
+                    value={replacementJustification}
+                    onChange={(e) => setReplacementJustification(e.target.value)}
+                    className="min-h-[90px] rounded-xl border border-orange-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-orange-700 dark:bg-gray-800 dark:text-gray-100"
+                  />
+                </label>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleInviteReplacement}
+                    disabled={sendingReplacement || !replacementUid}
+                    className="rounded-xl bg-black px-4 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {sendingReplacement ? "Invitando..." : "Invitar reemplazo"}
+                  </button>
+
+                  {isDirect ? (
+                    <button
+                      type="button"
+                      onClick={handleFinalizeDirectAssignment}
+                      disabled={finalizing || !canCloseWithoutReplacement}
+                      className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-extrabold text-orange-900 hover:bg-orange-100 disabled:opacity-50 dark:border-orange-700 dark:bg-gray-800 dark:text-orange-100 dark:hover:bg-orange-900/30"
+                    >
+                      {finalizing ? "Cerrando..." : "Cerrar con confirmados actuales"}
+                    </button>
+                  ) : null}
+                </div>
+
+                {isDirect && !canCloseWithoutReplacement ? (
+                  <div className="text-xs font-bold text-orange-900 dark:text-orange-100">
+                    Para cerrar sin reemplazo necesitás al menos 2 confirmados y ninguna invitación pendiente.
+                  </div>
+                ) : null}
               </div>
             </div>
-          </div>
+          ) : null}
 
           <SectionTitle>
             Confirmados ({confirmedCount}/{required})
@@ -446,7 +608,7 @@ export default function CaseDetailPage() {
               <div className="text-sm text-gray-700 dark:text-gray-200">Todavía no hay confirmados.</div>
             ) : (
               <ul className="ml-5 list-disc text-sm text-gray-800 dark:text-gray-100">
-                {(c.confirmedAssigneesUids ?? []).map((u) => (
+                {uniq(c.confirmedAssigneesUids ?? []).map((u) => (
                   <li key={u} className="my-2">
                     <span className="font-black">{emailByUid[u] ?? "Cargando..."}</span>
                   </li>
@@ -480,7 +642,10 @@ export default function CaseDetailPage() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : <Badge>AUTOMÁTICA</Badge>}
+                        {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : null}
+                        {i.mode === "auto" ? <Badge>AUTOMÁTICA</Badge> : null}
+                        {i.mode === "manual_fallback" ? <Badge tone="warn">REEMPLAZO MANUAL</Badge> : null}
+
                         {i.status === "pending" ? (
                           <Badge>PENDIENTE</Badge>
                         ) : i.status === "accepted" ? (
@@ -491,7 +656,7 @@ export default function CaseDetailPage() {
                       </div>
                     </div>
 
-                    {i.mode === "direct" && i.directJustification ? (
+                    {i.directJustification ? (
                       <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm text-orange-950 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-100">
                         <span className="font-black">Justificación:</span> {i.directJustification}
                       </div>

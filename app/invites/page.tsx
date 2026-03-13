@@ -17,27 +17,23 @@ import { httpsCallable } from "firebase/functions";
 
 import { auth, db, functions } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type InviteStatus = "pending" | "accepted" | "rejected";
-type InviteMode = "auto" | "direct";
+type InviteMode = "auto" | "direct" | "manual_fallback";
 
 type InviteRow = {
   id: string;
   caseId: string;
-
   caratula: string;
   jurisdiccion: string;
   specialtyName: string;
-
   status: InviteStatus;
   mode: InviteMode;
   directJustification?: string;
-
   invitedEmail?: string;
   invitedUid?: string;
-
   createdByUid?: string;
-
   invitedAtSec: number;
   respondedAtSec: number;
 };
@@ -80,17 +76,14 @@ function formatDateFromSeconds(seconds: number): string {
 export default function InvitesPage() {
   const router = useRouter();
 
-  // auth/shell data
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // page data
   const [items, setItems] = useState<InviteRow[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // uid -> email (para mostrar quien creó la invitación)
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
 
   const pending = useMemo(() => items.filter((i) => i.status === "pending"), [items]);
@@ -108,7 +101,6 @@ export default function InvitesPage() {
     });
   }, [responded]);
 
-  // Auth + rol + contador + snapshot
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -119,7 +111,6 @@ export default function InvitesPage() {
       setUser(u);
       setMsg(null);
 
-      // rol
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
         const data = userSnap.exists() ? (userSnap.data() as any) : {};
@@ -128,7 +119,6 @@ export default function InvitesPage() {
         setRole("lawyer");
       }
 
-      // contador (para tabs)
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -141,7 +131,6 @@ export default function InvitesPage() {
         setPendingInvites(0);
       }
 
-      // listado (realtime)
       const qInv = query(collectionGroup(db, "invites"), where("invitedUid", "==", u.uid));
 
       const unsub = onSnapshot(
@@ -175,9 +164,7 @@ export default function InvitesPage() {
                         : "";
                     }
                   }
-                } catch {
-                  // silencioso
-                }
+                } catch {}
 
                 return {
                   id: d.id,
@@ -210,7 +197,6 @@ export default function InvitesPage() {
     return () => unsubAuth();
   }, [router]);
 
-  // cargar emails de createdByUid (quien invitó) - SOLO EMAIL (nunca UID en UI)
   useEffect(() => {
     const uids = new Set<string>();
     items.forEach((i) => {
@@ -228,7 +214,6 @@ export default function InvitesPage() {
           try {
             const snap = await getDoc(doc(db, "users", uid));
             const email = snap.exists() ? String((snap.data() as any)?.email ?? "") : "";
-            // guardamos string (vacío si no hay email)
             newMap[uid] = email || "";
           } catch {
             newMap[uid] = "";
@@ -269,9 +254,14 @@ export default function InvitesPage() {
   function invitedByLabel(i: InviteRow) {
     const uid = i.createdByUid || "";
     if (!uid) return "-";
-    // ✅ nunca UID: si no cargó todavía, "Cargando..."
     const email = emailByUid[uid];
     return email ? email : "Cargando...";
+  }
+
+  function modeBadge(i: InviteRow) {
+    if (i.mode === "direct") return <Badge tone="warn">DIRECTA</Badge>;
+    if (i.mode === "manual_fallback") return <Badge tone="warn">REEMPLAZO MANUAL</Badge>;
+    return <Badge>AUTOMÁTICA</Badge>;
   }
 
   function Timeline({ i, responded }: { i: InviteRow; responded: boolean }) {
@@ -311,7 +301,7 @@ export default function InvitesPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : <Badge>AUTOMÁTICA</Badge>}
+            {modeBadge(i)}
             {isPending ? (
               <Badge>PENDIENTE</Badge>
             ) : i.status === "accepted" ? (
@@ -322,7 +312,7 @@ export default function InvitesPage() {
           </div>
         </div>
 
-        {i.mode === "direct" && i.directJustification ? (
+        {i.directJustification ? (
           <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 p-3 text-sm text-orange-950 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-100">
             <span className="font-black">Justificación:</span> {i.directJustification}
           </div>
@@ -367,12 +357,11 @@ export default function InvitesPage() {
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
-       breadcrumbs={[
+      breadcrumbs={[
         { label: "Inicio", href: "/dashboard" },
         { label: "Mis invitaciones" },
       ]}
     >
-      {/* mini header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Revisá tus invitaciones pendientes y el historial de respuestas.
@@ -386,7 +375,6 @@ export default function InvitesPage() {
         </div>
       ) : null}
 
-      {/* Pendientes */}
       <div className="text-sm font-black text-gray-900 dark:text-gray-100">
         Invitaciones pendientes
       </div>
@@ -400,7 +388,6 @@ export default function InvitesPage() {
         )}
       </div>
 
-      {/* Respondidas */}
       <div className="mt-8 text-sm font-black text-gray-900 dark:text-gray-100">
         Invitaciones respondidas
       </div>
@@ -413,6 +400,8 @@ export default function InvitesPage() {
           respondedSorted.map((i) => <RowCard key={i.id} i={i} kind="responded" />)
         )}
       </div>
+
+      <ScrollToTopButton />
     </AppShell>
   );
 }

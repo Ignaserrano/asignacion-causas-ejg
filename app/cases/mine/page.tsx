@@ -22,6 +22,7 @@ import {
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type CaseStatus = "draft" | "assigned" | "archived";
 
@@ -40,9 +41,8 @@ type CaseRow = {
   createdAt?: FirestoreDateLike;
   broughtByUid?: string;
   archivedAt?: FirestoreDateLike;
-
-  // opcional (si ya lo agregaste en tu modelo nuevo)
   participantsUids?: string[];
+  assignmentMode?: "auto" | "direct";
 };
 
 type SpecialtyDoc = { name?: string };
@@ -119,6 +119,7 @@ export default function MyCasesPage() {
 
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
+  const [inviteCountByCaseId, setInviteCountByCaseId] = useState<Record<string, number>>({});
 
   // opciones (combo Materia)
   const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
@@ -306,6 +307,34 @@ export default function MyCasesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
+  // cargar cantidad real de invites por causa
+  useEffect(() => {
+    if (rows.length === 0) {
+      setInviteCountByCaseId({});
+      return;
+    }
+
+    (async () => {
+      const entries = await Promise.all(
+        rows.map(async (r) => {
+          try {
+            const snap = await getDocs(collection(db, "cases", r.id, "invites"));
+            return [r.id, snap.size] as const;
+          } catch {
+            return [r.id, 0] as const;
+          }
+        })
+      );
+
+      const next: Record<string, number> = {};
+      entries.forEach(([caseId, count]) => {
+        next[caseId] = count;
+      });
+
+      setInviteCountByCaseId(next);
+    })();
+  }, [rows]);
+
   // resolver “compartido con” email -> uid
   useEffect(() => {
     if (filterSharedWithEmail === "all") {
@@ -343,6 +372,18 @@ export default function MyCasesPage() {
     if (p.length) return uniq(p);
 
     return uniq([String(r.broughtByUid ?? ""), ...((r.confirmedAssigneesUids ?? []) as string[])]);
+  };
+
+  const getCaseTargetCount = (r: CaseRow) => {
+    const confirmed = uniq(r.confirmedAssigneesUids ?? []).length;
+    const inviteCount = Number(inviteCountByCaseId[r.id] ?? 0);
+    const required = Number(r.requiredAssigneesCount ?? 0);
+
+    if (r.assignmentMode === "direct") {
+      return Math.max(inviteCount, required, confirmed, 1);
+    }
+
+    return Math.max(required || 2, confirmed, 1);
   };
 
   const filteredSorted = useMemo(() => {
@@ -442,7 +483,6 @@ export default function MyCasesPage() {
         { label: "Mis causas" },
       ]}
     >
-      {/* Header interno */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-gray-700 dark:text-gray-200">
           Mostrando <span className="font-bold">{showingText.shown}</span>
@@ -467,7 +507,6 @@ export default function MyCasesPage() {
         </div>
       </div>
 
-      {/* Filtros / orden */}
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
         <div className="grid gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -600,7 +639,6 @@ export default function MyCasesPage() {
         </div>
       ) : null}
 
-      {/* Listado */}
       {!loading && !msg ? (
         <div className="mt-4 grid gap-3">
           {pageRows.length === 0 ? (
@@ -609,8 +647,8 @@ export default function MyCasesPage() {
             </div>
           ) : (
             pageRows.map((r) => {
-              const required = Number(r.requiredAssigneesCount ?? 2);
-              const confirmed = (r.confirmedAssigneesUids ?? []).length;
+              const required = getCaseTargetCount(r);
+              const confirmed = uniq(r.confirmedAssigneesUids ?? []).length;
               const missing = Math.max(0, required - confirmed);
 
               return (
@@ -655,6 +693,7 @@ export default function MyCasesPage() {
                       ) : (
                         <Badge>PENDIENTE</Badge>
                       )}
+
                       <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
                         {missing > 0
                           ? `faltan ${missing} (${confirmed}/${required})`
@@ -678,7 +717,6 @@ export default function MyCasesPage() {
         </div>
       ) : null}
 
-      {/* Paginación */}
       {!loading && !msg ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -709,6 +747,7 @@ export default function MyCasesPage() {
           emails de usuarios del estudio.
         </div>
       ) : null}
+      <ScrollToTopButton />
     </AppShell>
   );
 }

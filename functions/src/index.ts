@@ -13,7 +13,7 @@ type Jurisdiccion = "nacional" | "federal" | "caba" | "provincia_bs_as";
 type AssignmentMode = "auto" | "direct";
 
 function uniq(arr: string[]) {
-  return Array.from(new Set(arr));
+  return Array.from(new Set(arr.filter(Boolean)));
 }
 
 async function assertAuthenticated(request: any) {
@@ -29,40 +29,19 @@ async function assertAdmin(request: any) {
   return uid;
 }
 
-/* =========================================================
-   PUSH HELPERS (FCM)
-   ========================================================= */
+async function assertCaseCreator(caseId: string, uid: string) {
+  const caseRef = admin.firestore().collection("cases").doc(caseId);
+  const caseSnap = await caseRef.get();
+  if (!caseSnap.exists) throw new HttpsError("not-found", "La causa no existe.");
 
-async function getUserTokens(uid: string): Promise<string[]> {
-  const snap = await admin.firestore().collection(`users/${uid}/fcmTokens`).get();
-  return snap.docs.map((d) => d.id);
+  const c = caseSnap.data() as any;
+  const broughtByUid = String(c?.broughtByUid ?? "");
+  if (!broughtByUid || broughtByUid !== uid) {
+    throw new HttpsError("permission-denied", "Solo quien creó la causa puede hacer esta acción.");
+  }
+
+  return { caseRef, caseSnap, caseData: c };
 }
-
-async function notifyUid(uid: string, title: string, body: string, data?: Record<string, string>) {
-  const tokens = await getUserTokens(uid);
-  if (!tokens.length) return;
-
-  const res = await admin.messaging().sendEachForMulticast({
-    tokens,
-    notification: { title, body },
-    data: data ?? {},
-  });
-
-  const batch = admin.firestore().batch();
-  res.responses.forEach((r, idx) => {
-    if (!r.success) {
-      const code = (r.error as any)?.code || "";
-      if (code.includes("registration-token-not-registered") || code.includes("invalid-argument")) {
-        batch.delete(admin.firestore().doc(`users/${uid}/fcmTokens/${tokens[idx]}`));
-      }
-    }
-  });
-  await batch.commit();
-}
-
-/* =========================================================
-   SENDGRID HELPERS
-   ========================================================= */
 
 function getSendgridConfig() {
   const apiKey = SENDGRID_API_KEY.value();
@@ -103,7 +82,6 @@ async function sendEmailsBestEffort(args: { to: string[]; subject: string; text:
 
     sgMail.setApiKey(apiKey);
 
-    // sendMultiple manda 1 request con múltiples destinatarios
     await sgMail.sendMultiple({
       to: toList,
       from,
@@ -120,7 +98,38 @@ async function sendEmailsBestEffort(args: { to: string[]; subject: string; text:
 }
 
 /* =========================================================
-   CREATE CASE + INVITES (+ PUSH + EMAIL INVITEES)
+   PUSH HELPERS (FCM)
+   ========================================================= */
+
+async function getUserTokens(uid: string): Promise<string[]> {
+  const snap = await admin.firestore().collection(`users/${uid}/fcmTokens`).get();
+  return snap.docs.map((d) => d.id);
+}
+
+async function notifyUid(uid: string, title: string, body: string, data?: Record<string, string>) {
+  const tokens = await getUserTokens(uid);
+  if (!tokens.length) return;
+
+  const res = await admin.messaging().sendEachForMulticast({
+    tokens,
+    notification: { title, body },
+    data: data ?? {},
+  });
+
+  const batch = admin.firestore().batch();
+  res.responses.forEach((r, idx) => {
+    if (!r.success) {
+      const code = (r.error as any)?.code || "";
+      if (code.includes("registration-token-not-registered") || code.includes("invalid-argument")) {
+        batch.delete(admin.firestore().doc(`users/${uid}/fcmTokens/${tokens[idx]}`));
+      }
+    }
+  });
+  await batch.commit();
+}
+
+/* =========================================================
+   CREATE CASE + INVITES
    ========================================================= */
 
 export const createCaseWithInvites = onCall(
@@ -128,7 +137,6 @@ export const createCaseWithInvites = onCall(
   async (request) => {
     const creatorUid = await assertAuthenticated(request);
 
-    // Validar que exista perfil
     const creatorDoc = await admin.firestore().collection("users").doc(creatorUid).get();
     if (!creatorDoc.exists) throw new HttpsError("failed-precondition", "No existe perfil de usuario.");
 
@@ -138,10 +146,8 @@ export const createCaseWithInvites = onCall(
       objeto?: string;
       resumen?: string;
       jurisdiccion?: Jurisdiccion;
-
       broughtByParticipates?: boolean;
       assignmentMode?: AssignmentMode;
-
       directAssigneesUids?: string[];
       directJustification?: string;
     };
@@ -161,46 +167,40 @@ export const createCaseWithInvites = onCall(
     if (!resumen) throw new HttpsError("invalid-argument", "Falta resumen.");
     if (!jurisdiccion) throw new HttpsError("invalid-argument", "Falta jurisdicción.");
 
-    // Regla: siempre se asignan 2 abogados finales.
+    // mínimo requerido final
     const requiredAssigneesCount = 2;
 
-    // Confirmados iniciales: si participa, el creador queda confirmado.
     const confirmedAssigneesUids = broughtByParticipates ? [creatorUid] : [];
 
-    // Determinar a quién invitar (UIDs)
     let inviteUids: string[] = [];
 
-   if (assignmentMode === "direct") {
-  const just = String(data?.directJustification ?? "").trim();
-  const direct = uniq(
-    (data?.directAssigneesUids ?? [])
-      .map((x) => String(x).trim())
-      .filter(Boolean)
-  );
+    if (assignmentMode === "direct") {
+      const just = String(data?.directJustification ?? "").trim();
+      const direct = uniq(
+        (data?.directAssigneesUids ?? [])
+          .map((x) => String(x).trim())
+          .filter(Boolean)
+      );
 
-  const requiredInvites = broughtByParticipates ? 1 : 2;
+      const requiredInvites = broughtByParticipates ? 1 : 2;
 
-  if (direct.length < requiredInvites) {
-    throw new HttpsError(
-      "invalid-argument",
-      `Asignación directa requiere al menos ${requiredInvites} invitado(s).`
-    );
-  }
-  if (just.length < 10) {
-    throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
-  }
+      if (direct.length < requiredInvites) {
+        throw new HttpsError(
+          "invalid-argument",
+          `Asignación directa requiere al menos ${requiredInvites} invitado(s).`
+        );
+      }
+      if (just.length < 10) {
+        throw new HttpsError("invalid-argument", "Justificación obligatoria (mínimo 10 caracteres).");
+      }
+      if (direct.includes(creatorUid)) {
+        throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
+      }
 
-  // No permitir invitarse a uno mismo
-  if (direct.includes(creatorUid)) {
-    throw new HttpsError("invalid-argument", "No podés invitarte a vos mismo.");
-  }
+      inviteUids = direct;
+    } else {
+      const needed = requiredAssigneesCount - confirmedAssigneesUids.length;
 
-  inviteUids = direct;
-}
-
-else {
-      // AUTO: turno estricto por especialidad
-      const needed = requiredAssigneesCount - confirmedAssigneesUids.length; // 1 o 2
       if (needed <= 0) {
         inviteUids = [];
       } else {
@@ -216,7 +216,7 @@ else {
           const candidates = usersSnap.docs
             .map((d) => ({ uid: d.id, email: (d.data() as any)?.email ?? "" }))
             .filter((u) => u.uid !== creatorUid)
-            .sort((a, b) => String(a.email).localeCompare(String(b.email))); // orden estable
+            .sort((a, b) => String(a.email).localeCompare(String(b.email)));
 
           if (candidates.length < needed) {
             throw new HttpsError("failed-precondition", "No hay suficientes abogados elegibles en esa especialidad.");
@@ -237,7 +237,6 @@ else {
 
           inviteUids = picked;
 
-          // avanzar cursor
           tx.set(
             rotRef,
             {
@@ -250,7 +249,6 @@ else {
       }
     }
 
-    // Crear caso + invitaciones
     const caseRef = admin.firestore().collection("cases").doc();
     const now = admin.firestore.FieldValue.serverTimestamp();
 
@@ -258,11 +256,9 @@ else {
       assignmentMode === "direct" ? String(data?.directJustification ?? "").trim() : "";
     const directAssigneesUids = assignmentMode === "direct" ? inviteUids : [];
 
-    // Para email best-effort fuera de la transacción
     let invitedEmails: string[] = [];
 
     await admin.firestore().runTransaction(async (tx) => {
-      // 1) LECTURAS (todas primero)
       const userRefs = inviteUids.map((u) => admin.firestore().collection("users").doc(u));
       const userSnaps = await Promise.all(userRefs.map((ref) => tx.get(ref)));
 
@@ -274,27 +270,27 @@ else {
 
       invitedEmails = inviteUids.map((u) => emailByUid.get(u) ?? "").filter(Boolean);
 
-      // 2) ESCRITURAS
-      tx.set(caseRef, {
-        caratulaTentativa,
-        specialtyId,
-        objeto,
-        resumen,
-        jurisdiccion,
-
-        broughtByUid: creatorUid,
-        broughtByParticipates,
-
-        assignmentMode,
-        directAssigneesUids,
-        directJustification,
-
-        requiredAssigneesCount,
-        confirmedAssigneesUids,
-
-        status: "draft",
-        createdAt: now,
-      });
+  tx.set(caseRef, {
+  caratulaTentativa,
+  specialtyId,
+  objeto,
+  resumen,
+  jurisdiccion,
+  broughtByUid: creatorUid,
+  broughtByParticipates,
+  assignmentMode,
+  directAssigneesUids,
+  directJustification,
+  requiredAssigneesCount,
+  confirmedAssigneesUids,
+  status: "draft",
+  directAssignmentNeedsReview: false,
+  manualReplacementNeeded: false,
+  manualReplacementReason: "",
+  fallbackReplacementMode: false,
+  createdAt: now,
+  updatedAt: now,
+});
 
       for (const invitedUid of inviteUids) {
         const invitedEmail = emailByUid.get(invitedUid) ?? "";
@@ -306,7 +302,6 @@ else {
           status: "pending",
           invitedAt: now,
           respondedAt: null,
-
           mode: assignmentMode,
           directJustification: assignmentMode === "direct" ? directJustification : "",
           createdByUid: creatorUid,
@@ -314,9 +309,6 @@ else {
       }
     });
 
-    // ======================
-    // PUSH a invitados (best-effort)
-    // ======================
     for (const invitedUid of inviteUids) {
       try {
         await notifyUid(invitedUid, "Nueva invitación", `Te invitaron a una causa: ${caratulaTentativa}`, {
@@ -327,9 +319,6 @@ else {
       }
     }
 
-    // ======================
-    // EMAIL a invitados (best-effort)
-    // ======================
     const inviteEmailResult = await sendEmailsBestEffort({
       to: invitedEmails,
       subject: `Nueva invitación — ${caratulaTentativa}`,
@@ -349,7 +338,9 @@ else {
 );
 
 /* =========================================================
-   RESPOND INVITE + REINVITE + PUSH + EMAIL (ALWAYS)
+   RESPOND INVITE
+   - AUTO: mantiene reemplazo automático
+   - DIRECT: NO reemplaza automático
    ========================================================= */
 
 export const respondInvite = onCall(
@@ -369,145 +360,255 @@ export const respondInvite = onCall(
       const decision = data?.decision;
 
       if (!caseId || !inviteId) throw new HttpsError("invalid-argument", "Falta caseId/inviteId.");
-      if (decision !== "accepted" && decision !== "rejected") throw new HttpsError("invalid-argument", "Decisión inválida.");
+      if (decision !== "accepted" && decision !== "rejected") {
+        throw new HttpsError("invalid-argument", "Decisión inválida.");
+      }
 
       const caseRef = admin.firestore().collection("cases").doc(caseId);
       const inviteRef = caseRef.collection("invites").doc(inviteId);
 
-      // Para notificaciones/email fuera de la transacción
       let creatorUidToNotify = "";
       let caratulaToNotify = caseId;
       let nextUidToNotify: string | null = null;
-
-      // Para email al creador (capturado dentro de TX)
       let creatorUidEmail = "";
       let caratulaEmail = caseId;
 
       await admin.firestore().runTransaction(async (tx) => {
-        // READS
-        const [caseSnap, inviteSnap] = await Promise.all([tx.get(caseRef), tx.get(inviteRef)]);
+        const [caseSnap, inviteSnap, invitesSnap] = await Promise.all([
+          tx.get(caseRef),
+          tx.get(inviteRef),
+          tx.get(caseRef.collection("invites")),
+        ]);
+
         if (!caseSnap.exists) throw new HttpsError("not-found", "Causa no existe.");
         if (!inviteSnap.exists) throw new HttpsError("not-found", "Invitación no existe.");
 
         const invite = inviteSnap.data() as any;
-        if (String(invite.invitedUid ?? "") !== uid) throw new HttpsError("permission-denied", "No sos el invitado.");
-        if (String(invite.status ?? "") !== "pending") throw new HttpsError("failed-precondition", "Invitación ya respondida.");
+        if (String(invite.invitedUid ?? "") !== uid) {
+          throw new HttpsError("permission-denied", "No sos el invitado.");
+        }
+        if (String(invite.status ?? "") !== "pending") {
+          throw new HttpsError("failed-precondition", "Invitación ya respondida.");
+        }
 
         const c = caseSnap.data() as any;
 
         creatorUidToNotify = String(c.broughtByUid ?? "");
         caratulaToNotify = String(c.caratulaTentativa ?? caseId);
-
         creatorUidEmail = creatorUidToNotify;
         caratulaEmail = caratulaToNotify;
 
-        const assignmentMode: "auto" | "direct" = (c.assignmentMode ?? "auto") as any;
+        const assignmentMode: AssignmentMode = (c.assignmentMode ?? "auto") as AssignmentMode;
         const specialtyId: string = String(c.specialtyId ?? "");
-
         const broughtByUid: string = String(c.broughtByUid ?? "");
-        const required: number = Number(c.requiredAssigneesCount ?? 2);
-        const confirmed: string[] = Array.isArray(c.confirmedAssigneesUids) ? c.confirmedAssigneesUids : [];
+        const required: number = Math.max(Number(c.requiredAssigneesCount ?? 2), 2);
+        const confirmed: string[] = Array.isArray(c.confirmedAssigneesUids)
+          ? uniq(c.confirmedAssigneesUids)
+          : [];
         const status: string = String(c.status ?? "draft");
-        const directJustificationFromCase: string = String(c.directJustification ?? "");
+        const directAssignmentNeedsReview = Boolean(c.directAssignmentNeedsReview);
+        const fallbackReplacementMode = Boolean(c.fallbackReplacementMode);
+        const currentInviteMode = String(invite.mode ?? (assignmentMode === "direct" ? "direct" : "auto"));
 
         const now = admin.firestore.FieldValue.serverTimestamp();
 
-        const invitesSnap = await tx.get(caseRef.collection("invites"));
-        const alreadyInvited = new Set<string>();
-        invitesSnap.docs.forEach((d) => {
-          const dta = d.data() as any;
-          if (dta?.invitedUid) alreadyInvited.add(String(dta.invitedUid));
-        });
+        const otherInvites = invitesSnap.docs.filter((d) => d.id !== inviteId);
+        const otherPendingCount = otherInvites.filter(
+          (d) => String((d.data() as any)?.status ?? "") === "pending"
+        ).length;
 
-        const blocked = new Set<string>([...confirmed, ...alreadyInvited]);
-        if (broughtByUid) blocked.add(broughtByUid);
+        const newConfirmed =
+          decision === "accepted"
+            ? uniq([...confirmed, uid])
+            : uniq(confirmed);
 
-        const remainingNeeded = Math.max(0, required - confirmed.length);
+        // =========================
+        // DIRECT
+        // =========================
+        if (assignmentMode === "direct") {
+          if (decision === "accepted") {
+            const canAutoAssignDirect =
+              otherPendingCount === 0 &&
+              !directAssignmentNeedsReview &&
+              newConfirmed.length >= 2;
 
-        const shouldReplace = decision === "rejected" && status !== "assigned" && remainingNeeded > 0;
+            tx.update(inviteRef, {
+              status: decision,
+              respondedAt: now,
+            });
 
-        let nextUid: string | null = null;
-        let nextEmail = "";
-        let nextCursor: number | null = null;
-        let rotRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData> | null = null;
-
-        if (shouldReplace) {
-          let usersQ: FirebaseFirestore.Query<FirebaseFirestore.DocumentData>;
-
-          if (assignmentMode === "auto") {
-            if (!specialtyId) throw new HttpsError("failed-precondition", "La causa no tiene specialtyId.");
-            usersQ = admin
-              .firestore()
-              .collection("users")
-              .where("isPracticing", "==", true)
-              .where("specialties", "array-contains", specialtyId);
-            rotRef = admin.firestore().collection("rotationState").doc(specialtyId);
-          } else {
-            usersQ = admin.firestore().collection("users").where("isPracticing", "==", true);
-            rotRef = admin.firestore().collection("rotationState").doc("direct");
+            tx.update(caseRef, {
+              confirmedAssigneesUids: newConfirmed,
+              status: canAutoAssignDirect ? "assigned" : "draft",
+              updatedAt: now,
+            });
+            return;
           }
 
-          const usersSnap = await tx.get(usersQ);
+          tx.update(inviteRef, {
+            status: decision,
+            respondedAt: now,
+          });
 
-          const candidates = usersSnap.docs
-            .map((d) => ({ uid: d.id, email: String((d.data() as any)?.email ?? "") }))
-            .filter((u) => !blocked.has(u.uid))
-            .sort((a, b) => a.email.localeCompare(b.email));
-
-          if (candidates.length === 0) {
-            throw new HttpsError(
-              "failed-precondition",
-              assignmentMode === "auto"
-                ? "No hay más abogados elegibles para reemplazo en esa especialidad."
-                : "No hay más abogados elegibles para reemplazo (direct/global)."
-            );
-          }
-
-          const rotSnap = await tx.get(rotRef);
-          const cursor = rotSnap.exists ? Number((rotSnap.data() as any)?.cursor ?? 0) : 0;
-
-          const picked = candidates[cursor % candidates.length];
-          nextUid = picked.uid;
-          nextEmail = picked.email;
-          nextCursor = (cursor + 1) % candidates.length;
-        }
-
-        // WRITES
-        tx.update(inviteRef, { status: decision, respondedAt: now });
-
-        if (decision === "accepted") {
-          const newConfirmed = Array.from(new Set([...confirmed, uid]));
-          const done = newConfirmed.length >= required;
-
-          tx.update(caseRef, { confirmedAssigneesUids: newConfirmed, status: done ? "assigned" : "draft" });
+          tx.update(caseRef, {
+            status: "draft",
+            directAssignmentNeedsReview: true,
+            updatedAt: now,
+          });
           return;
         }
 
-        // rejected => reinvitar
-        if (shouldReplace && nextUid && nextCursor !== null && rotRef) {
-          const newInviteRef = caseRef.collection("invites").doc();
+        // =========================
+        // AUTO + accepted
+        // =========================
+        if (decision === "accepted") {
+          const done = newConfirmed.length >= required;
 
-          tx.set(newInviteRef, {
-            invitedUid: nextUid,
-            invitedEmail: nextEmail,
-            status: "pending",
-            invitedAt: now,
-            respondedAt: null,
-            mode: assignmentMode,
-            directJustification: assignmentMode === "direct" ? directJustificationFromCase : "",
-            createdByUid: broughtByUid,
+          tx.update(inviteRef, {
+            status: decision,
+            respondedAt: now,
           });
 
-          nextUidToNotify = nextUid;
-
-          tx.set(rotRef, { cursor: nextCursor, updatedAt: now }, { merge: true });
-          tx.update(caseRef, { status: "draft" });
+          tx.update(caseRef, {
+            confirmedAssigneesUids: newConfirmed,
+            status: done ? "assigned" : "draft",
+            manualReplacementNeeded: false,
+            manualReplacementReason: "",
+            updatedAt: now,
+          });
+          return;
         }
+
+        // =========================
+        // AUTO + rejected
+        // =========================
+
+        // Si ya entró en modo reemplazo manual, no intentar más por especialidad
+        if (fallbackReplacementMode || currentInviteMode === "manual_fallback") {
+          tx.update(inviteRef, {
+            status: decision,
+            respondedAt: now,
+          });
+
+          tx.update(caseRef, {
+            status: "draft",
+            manualReplacementNeeded: true,
+            manualReplacementReason: "manual_fallback_rejected",
+            fallbackReplacementMode: true,
+            updatedAt: now,
+          });
+          return;
+        }
+
+        const remainingNeeded = Math.max(0, required - confirmed.length);
+        const shouldReplace = status !== "assigned" && remainingNeeded > 0;
+
+        if (!shouldReplace) {
+          tx.update(inviteRef, {
+            status: decision,
+            respondedAt: now,
+          });
+
+          tx.update(caseRef, {
+            status: "draft",
+            updatedAt: now,
+          });
+          return;
+        }
+
+        // Buscar reemplazo SOLO dentro de la especialidad
+        const usersQ = admin
+          .firestore()
+          .collection("users")
+          .where("isPracticing", "==", true)
+          .where("specialties", "array-contains", specialtyId);
+
+        const usersSnap = await tx.get(usersQ);
+
+        const blocked = new Set<string>([
+          ...confirmed,
+          ...invitesSnap.docs
+            .filter((d) => {
+              const inv = d.data() as any;
+              const st = String(inv?.status ?? "");
+              return st === "pending" || st === "accepted";
+            })
+            .map((d) => String((d.data() as any)?.invitedUid ?? ""))
+            .filter(Boolean),
+        ]);
+
+        if (broughtByUid) blocked.add(broughtByUid);
+        blocked.add(uid); // no reinvitar al que acaba de rechazar
+
+        const candidates = usersSnap.docs
+          .map((d) => ({
+            uid: d.id,
+            email: String((d.data() as any)?.email ?? ""),
+          }))
+          .filter((u) => !blocked.has(u.uid))
+          .sort((a, b) => a.email.localeCompare(b.email));
+
+        // Si no hay candidatos de la especialidad => pasar a reemplazo manual
+        if (candidates.length === 0) {
+          tx.update(inviteRef, {
+            status: decision,
+            respondedAt: now,
+          });
+
+          tx.update(caseRef, {
+            status: "draft",
+            manualReplacementNeeded: true,
+            manualReplacementReason: "no_specialty_candidates",
+            fallbackReplacementMode: true,
+            updatedAt: now,
+          });
+          return;
+        }
+
+        const rotRef = admin.firestore().collection("rotationState").doc(specialtyId);
+        const rotSnap = await tx.get(rotRef);
+        const cursor = rotSnap.exists ? Number((rotSnap.data() as any)?.cursor ?? 0) : 0;
+
+        const picked = candidates[cursor % candidates.length];
+        const nextCursor = (cursor + 1) % candidates.length;
+
+        tx.update(inviteRef, {
+          status: decision,
+          respondedAt: now,
+        });
+
+        const newInviteRef = caseRef.collection("invites").doc();
+
+        tx.set(newInviteRef, {
+          invitedUid: picked.uid,
+          invitedEmail: picked.email,
+          status: "pending",
+          invitedAt: now,
+          respondedAt: null,
+          mode: "auto",
+          directJustification: "",
+          createdByUid: broughtByUid,
+        });
+
+        tx.set(
+          rotRef,
+          {
+            cursor: nextCursor,
+            updatedAt: now,
+          },
+          { merge: true }
+        );
+
+        tx.update(caseRef, {
+          status: "draft",
+          manualReplacementNeeded: false,
+          manualReplacementReason: "",
+          updatedAt: now,
+        });
+
+        nextUidToNotify = picked.uid;
       });
 
-      // ======================
-      // PUSH (best-effort)
-      // ======================
       try {
         if (creatorUidToNotify) {
           await notifyUid(
@@ -523,15 +624,17 @@ export const respondInvite = onCall(
 
       try {
         if (nextUidToNotify) {
-          await notifyUid(nextUidToNotify, "Nueva invitación", `Te invitaron a una causa: ${caratulaToNotify}`, { caseId });
+          await notifyUid(
+            nextUidToNotify,
+            "Nueva invitación",
+            `Te invitaron a una causa: ${caratulaToNotify}`,
+            { caseId }
+          );
         }
       } catch (e) {
         console.error("Push reinvite error:", e);
       }
 
-      // ======================
-      // EMAIL al creador (best-effort) - SIEMPRE
-      // ======================
       let creatorEmail = "";
       if (creatorUidEmail) {
         const creatorSnap = await admin.firestore().collection("users").doc(creatorUidEmail).get();
@@ -570,6 +673,310 @@ export const respondInvite = onCall(
   }
 );
 
+export const inviteCaseReplacement = onCall(
+  { secrets: [SENDGRID_API_KEY, MAIL_FROM] },
+  async (request) => {
+    const uid = await assertAuthenticated(request);
+
+    const data = request.data as {
+      caseId?: string;
+      newInvitedUid?: string;
+      justification?: string;
+    };
+
+    const caseId = String(data?.caseId ?? "").trim();
+    const newInvitedUid = String(data?.newInvitedUid ?? "").trim();
+    const justification = String(data?.justification ?? "").trim();
+
+    if (!caseId) throw new HttpsError("invalid-argument", "Falta caseId.");
+    if (!newInvitedUid) throw new HttpsError("invalid-argument", "Falta newInvitedUid.");
+
+    const { caseRef, caseData } = await assertCaseCreator(caseId, uid);
+
+    const assignmentMode = String(caseData?.assignmentMode ?? "") as AssignmentMode;
+    const manualReplacementNeeded = Boolean(caseData?.manualReplacementNeeded);
+    const fallbackReplacementMode = Boolean(caseData?.fallbackReplacementMode);
+
+    const canUseManualReplacement =
+      assignmentMode === "direct" || manualReplacementNeeded || fallbackReplacementMode;
+
+    if (!canUseManualReplacement) {
+      throw new HttpsError(
+        "failed-precondition",
+        "La causa no está en una situación que permita reemplazo manual."
+      );
+    }
+
+    const creatorUid = String(caseData?.broughtByUid ?? "");
+    if (newInvitedUid === creatorUid) {
+      throw new HttpsError("invalid-argument", "No podés invitar al creador como reemplazo.");
+    }
+
+    await admin.firestore().runTransaction(async (tx) => {
+      const [caseSnap, invitesSnap, newUserSnap] = await Promise.all([
+        tx.get(caseRef),
+        tx.get(caseRef.collection("invites")),
+        tx.get(admin.firestore().collection("users").doc(newInvitedUid)),
+      ]);
+
+      if (!caseSnap.exists) throw new HttpsError("not-found", "La causa no existe.");
+      if (!newUserSnap.exists) throw new HttpsError("not-found", "El abogado seleccionado no existe.");
+
+      const c = caseSnap.data() as any;
+      const confirmed = Array.isArray(c?.confirmedAssigneesUids)
+        ? uniq(c.confirmedAssigneesUids)
+        : [];
+
+      const existingInviteForSameUser = invitesSnap.docs.some((d) => {
+        const inv = d.data() as any;
+        return String(inv?.invitedUid ?? "") === newInvitedUid;
+      });
+
+      if (existingInviteForSameUser || confirmed.includes(newInvitedUid)) {
+        throw new HttpsError("already-exists", "Ese abogado ya fue invitado o ya está confirmado.");
+      }
+
+      const newInviteRef = caseRef.collection("invites").doc();
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const invitedEmail = String((newUserSnap.data() as any)?.email ?? "");
+
+      tx.set(newInviteRef, {
+        invitedUid: newInvitedUid,
+        invitedEmail,
+        status: "pending",
+        invitedAt: now,
+        respondedAt: null,
+        mode: assignmentMode === "direct" ? "direct" : "manual_fallback",
+        directJustification: justification || String(c?.directJustification ?? ""),
+        createdByUid: uid,
+      });
+
+      tx.update(caseRef, {
+        status: "draft",
+        manualReplacementNeeded: false,
+        manualReplacementReason: "",
+        fallbackReplacementMode: assignmentMode === "auto" ? true : Boolean(c?.fallbackReplacementMode),
+        directAssignmentNeedsReview: assignmentMode === "direct" ? false : Boolean(c?.directAssignmentNeedsReview),
+        updatedAt: now,
+      });
+    });
+
+    try {
+      await notifyUid(
+        newInvitedUid,
+        "Nueva invitación",
+        `Te invitaron a una causa: ${String(caseData?.caratulaTentativa ?? caseId)}`,
+        { caseId }
+      );
+    } catch (e) {
+      console.error("Push replacement invite error:", e);
+    }
+
+    const newUserSnap = await admin.firestore().collection("users").doc(newInvitedUid).get();
+    const invitedEmail = String((newUserSnap.data() as any)?.email ?? "");
+
+    let emailSent = false;
+    let emailError: string | null = null;
+
+    if (invitedEmail) {
+      const r = await sendEmailBestEffort({
+        to: invitedEmail,
+        subject: `Nueva invitación — ${String(caseData?.caratulaTentativa ?? caseId)}`,
+        text:
+          `Tenés una nueva invitación a una causa.\n\n` +
+          `Carátula: ${String(caseData?.caratulaTentativa ?? caseId)}\n` +
+          `Jurisdicción: ${String(caseData?.jurisdiccion ?? "")}\n` +
+          `CaseId: ${caseId}\n`,
+      });
+      emailSent = r.sent;
+      emailError = r.error;
+    } else {
+      emailError = "El reemplazo no tiene email cargado.";
+    }
+
+    return { ok: true, emailSent, emailError };
+  }
+);
+
+/* =========================================================
+   DIRECT: INVITAR REEMPLAZO MANUAL
+   ========================================================= */
+
+export const inviteDirectReplacement = onCall(
+  { secrets: [SENDGRID_API_KEY, MAIL_FROM] },
+  async (request) => {
+    const uid = await assertAuthenticated(request);
+
+    const data = request.data as {
+      caseId?: string;
+      newInvitedUid?: string;
+      justification?: string;
+    };
+
+    const caseId = String(data?.caseId ?? "").trim();
+    const newInvitedUid = String(data?.newInvitedUid ?? "").trim();
+    const justification = String(data?.justification ?? "").trim();
+
+    if (!caseId) throw new HttpsError("invalid-argument", "Falta caseId.");
+    if (!newInvitedUid) throw new HttpsError("invalid-argument", "Falta newInvitedUid.");
+
+    const { caseRef, caseData } = await assertCaseCreator(caseId, uid);
+
+    if (String(caseData?.assignmentMode ?? "") !== "direct") {
+      throw new HttpsError("failed-precondition", "Esta acción solo aplica a causas con asignación directa.");
+    }
+
+    const creatorUid = String(caseData?.broughtByUid ?? "");
+    if (newInvitedUid === creatorUid) {
+      throw new HttpsError("invalid-argument", "No podés invitar al creador como reemplazo.");
+    }
+
+    const confirmed = Array.isArray(caseData?.confirmedAssigneesUids)
+      ? uniq(caseData.confirmedAssigneesUids)
+      : [];
+
+    await admin.firestore().runTransaction(async (tx) => {
+      const [caseSnap, invitesSnap, newUserSnap] = await Promise.all([
+        tx.get(caseRef),
+        tx.get(caseRef.collection("invites")),
+        tx.get(admin.firestore().collection("users").doc(newInvitedUid)),
+      ]);
+
+      if (!caseSnap.exists) throw new HttpsError("not-found", "La causa no existe.");
+      if (!newUserSnap.exists) throw new HttpsError("not-found", "El abogado seleccionado no existe.");
+
+      const c = caseSnap.data() as any;
+      if (String(c?.assignmentMode ?? "") !== "direct") {
+        throw new HttpsError("failed-precondition", "La causa ya no está en modo directo.");
+      }
+
+      const existingInviteForSameUser = invitesSnap.docs.some((d) => {
+        const inv = d.data() as any;
+        return String(inv?.invitedUid ?? "") === newInvitedUid;
+      });
+
+      if (existingInviteForSameUser || confirmed.includes(newInvitedUid)) {
+        throw new HttpsError("already-exists", "Ese abogado ya fue invitado o ya está confirmado.");
+      }
+
+      const newInviteRef = caseRef.collection("invites").doc();
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const invitedEmail = String((newUserSnap.data() as any)?.email ?? "");
+
+      tx.set(newInviteRef, {
+        invitedUid: newInvitedUid,
+        invitedEmail,
+        status: "pending",
+        invitedAt: now,
+        respondedAt: null,
+        mode: "direct",
+        directJustification: justification || String(c?.directJustification ?? ""),
+        createdByUid: uid,
+      });
+
+      tx.update(caseRef, {
+        status: "draft",
+        directAssignmentNeedsReview: false,
+        updatedAt: now,
+      });
+    });
+
+    try {
+      await notifyUid(
+        newInvitedUid,
+        "Nueva invitación",
+        `Te invitaron a una causa directa: ${String(caseData?.caratulaTentativa ?? caseId)}`,
+        { caseId }
+      );
+    } catch (e) {
+      console.error("Push replacement invite error:", e);
+    }
+
+    const newUserSnap = await admin.firestore().collection("users").doc(newInvitedUid).get();
+    const invitedEmail = String((newUserSnap.data() as any)?.email ?? "");
+
+    let emailSent = false;
+    let emailError: string | null = null;
+
+    if (invitedEmail) {
+      const r = await sendEmailBestEffort({
+        to: invitedEmail,
+        subject: `Nueva invitación — ${String(caseData?.caratulaTentativa ?? caseId)}`,
+        text:
+          `Tenés una nueva invitación a una causa.\n\n` +
+          `Carátula: ${String(caseData?.caratulaTentativa ?? caseId)}\n` +
+          `Jurisdicción: ${String(caseData?.jurisdiccion ?? "")}\n` +
+          `CaseId: ${caseId}\n`,
+      });
+      emailSent = r.sent;
+      emailError = r.error;
+    } else {
+      emailError = "El reemplazo no tiene email cargado.";
+    }
+
+    return { ok: true, emailSent, emailError };
+  }
+);
+
+/* =========================================================
+   DIRECT: CERRAR ASIGNACIÓN MANUALMENTE
+   ========================================================= */
+
+export const finalizeDirectAssignment = onCall(async (request) => {
+  const uid = await assertAuthenticated(request);
+
+  const data = request.data as {
+    caseId?: string;
+  };
+
+  const caseId = String(data?.caseId ?? "").trim();
+  if (!caseId) throw new HttpsError("invalid-argument", "Falta caseId.");
+
+  const { caseRef } = await assertCaseCreator(caseId, uid);
+
+  await admin.firestore().runTransaction(async (tx) => {
+    const [caseSnap, invitesSnap] = await Promise.all([
+      tx.get(caseRef),
+      tx.get(caseRef.collection("invites")),
+    ]);
+
+    if (!caseSnap.exists) throw new HttpsError("not-found", "La causa no existe.");
+
+    const c = caseSnap.data() as any;
+    if (String(c?.assignmentMode ?? "") !== "direct") {
+      throw new HttpsError("failed-precondition", "Solo se puede cerrar manualmente una causa con asignación directa.");
+    }
+
+    const confirmed = Array.isArray(c?.confirmedAssigneesUids)
+      ? uniq(c.confirmedAssigneesUids)
+      : [];
+
+    const pendingCount = invitesSnap.docs.filter((d) => {
+      const inv = d.data() as any;
+      return String(inv?.status ?? "") === "pending";
+    }).length;
+
+    if (confirmed.length < 2) {
+      throw new HttpsError("failed-precondition", "Se necesitan al menos 2 abogados confirmados.");
+    }
+
+    if (pendingCount > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No podés cerrar la asignación mientras haya invitaciones pendientes."
+      );
+    }
+
+    tx.update(caseRef, {
+      status: "assigned",
+      directAssignmentNeedsReview: false,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return { ok: true };
+});
+
 /* =========================================================
    ADMIN: LAWYERS MANAGEMENT
    ========================================================= */
@@ -588,7 +995,7 @@ export const adminCreateLawyer = onCall(async (request) => {
   const email = String(data?.email ?? "").trim().toLowerCase();
   const password = String(data?.password ?? "");
   const specialties = Array.isArray(data?.specialties) ? data.specialties : [];
-  const isPracticing = data?.isPracticing !== false; // default true
+  const isPracticing = data?.isPracticing !== false;
   const role = (data?.role ?? "lawyer") as "lawyer" | "admin";
 
   if (!email || !email.includes("@")) throw new HttpsError("invalid-argument", "Email inválido.");

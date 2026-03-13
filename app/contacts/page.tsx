@@ -21,6 +21,7 @@ import { MessageCircle } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 import { PartyRole } from "@/lib/caseManagement";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type ContactRow = {
   id: string;
@@ -51,6 +52,7 @@ type ContactCaseRow = {
   caseId: string;
   caratula: string;
   roles: PartyRole[];
+  isArchived: boolean;
 };
 
 const PAGE_SIZE = 25;
@@ -640,42 +642,76 @@ export default function ContactsListPage() {
     setDetailsModalOpen(true);
   }
 
-  async function openCasesModal(contact: ContactRow) {
-    const contactName = getDisplayName(contact);
+ async function openCasesModal(contact: ContactRow) {
+  const contactName = getDisplayName(contact);
 
-    setCasesModalOpen(true);
-    setCasesModalContactName(contactName);
-    setCasesLoading(true);
-    setCasesError(null);
+  setCasesModalOpen(true);
+  setCasesModalContactName(contactName);
+  setCasesLoading(true);
+  setCasesError(null);
+  setContactCases([]);
+
+  try {
+    const linksSnap = await getDocs(
+      query(
+        collection(db, "contacts", contact.id, "caseLinks"),
+        orderBy("caratula", "asc"),
+        limit(200)
+      )
+    );
+
+    const baseRows = linksSnap.docs.map((d) => {
+      const data = d.data() as any;
+      return {
+        caseId: String(data?.caseId ?? d.id),
+        caratula: String(data?.caratula ?? "").trim() || "(sin carátula)",
+        roles: Array.isArray(data?.roles) ? (data.roles as PartyRole[]) : [],
+      };
+    });
+
+    const rowsWithArchive = await Promise.all(
+      baseRows.map(async (row) => {
+        try {
+          const [caseSnap, metaSnap] = await Promise.all([
+            getDoc(doc(db, "cases", row.caseId)),
+            getDoc(doc(db, "cases", row.caseId, "management", "meta")),
+          ]);
+
+          const caseData = caseSnap.exists() ? (caseSnap.data() as any) : {};
+          const metaData = metaSnap.exists() ? (metaSnap.data() as any) : {};
+
+          const isArchived =
+            String(caseData?.status ?? "").trim() === "archived" ||
+            !!metaData?.archivedAt;
+
+          return {
+            ...row,
+            isArchived,
+          } satisfies ContactCaseRow;
+        } catch {
+          return {
+            ...row,
+            isArchived: false,
+          } satisfies ContactCaseRow;
+        }
+      })
+    );
+
+    rowsWithArchive.sort((a, b) => {
+      if (a.isArchived === b.isArchived) {
+        return a.caratula.localeCompare(b.caratula, "es");
+      }
+      return a.isArchived ? 1 : -1;
+    });
+
+    setContactCases(rowsWithArchive);
+  } catch (e: any) {
+    setCasesError(e?.message ?? "No se pudieron cargar las causas de este contacto.");
     setContactCases([]);
-
-    try {
-      const snap = await getDocs(
-        query(
-          collection(db, "contacts", contact.id, "caseLinks"),
-          orderBy("caratula", "asc"),
-          limit(200)
-        )
-      );
-
-      const rows = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          caseId: String(data?.caseId ?? d.id),
-          caratula: String(data?.caratula ?? "").trim() || "(sin carátula)",
-          roles: Array.isArray(data?.roles) ? (data.roles as PartyRole[]) : [],
-        } satisfies ContactCaseRow;
-      });
-
-      setContactCases(rows);
-    } catch (e: any) {
-      setCasesError(e?.message ?? "No se pudieron cargar las causas de este contacto.");
-      setContactCases([]);
-    } finally {
-      setCasesLoading(false);
-    }
+  } finally {
+    setCasesLoading(false);
   }
-
+}
   function goToCase(caseId: string) {
     setCasesModalOpen(false);
     router.push(`/cases/${caseId}`);
@@ -960,36 +996,47 @@ export default function ContactsListPage() {
 
             <div className="divide-y divide-gray-200 dark:divide-gray-800">
               {contactCases.map((row) => (
-                <button
-                  key={row.caseId}
-                  type="button"
-                  onClick={() => goToCase(row.caseId)}
-                  className="grid w-full gap-2 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40 md:grid-cols-[2fr_1fr] md:items-center"
-                >
-                  <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                    {row.caratula}
-                  </div>
+  <button
+    key={row.caseId}
+    type="button"
+    onClick={() => goToCase(row.caseId)}
+    className="grid w-full gap-2 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40 md:grid-cols-[2fr_1fr] md:items-center"
+  >
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+          {row.caratula}
+        </div>
 
-                  <div className="flex flex-wrap gap-1">
-                    {row.roles.length > 0 ? (
-                      row.roles.map((r) => (
-                        <span
-                          key={`${row.caseId}-${r}`}
-                          className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                        >
-                          {roleLabel(r)}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-xs text-gray-600 dark:text-gray-300">-</span>
-                    )}
-                  </div>
-                </button>
-              ))}
+        {row.isArchived ? (
+          <span className="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-0.5 text-[11px] font-black text-yellow-900 dark:border-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-100">
+            Archivada
+          </span>
+        ) : null}
+      </div>
+    </div>
+
+    <div className="flex flex-wrap gap-1">
+      {row.roles.length > 0 ? (
+        row.roles.map((r) => (
+          <span
+            key={`${row.caseId}-${r}`}
+            className="rounded-full border border-gray-200 bg-gray-100 px-2 py-0.5 text-[11px] font-black text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+          >
+            {roleLabel(r)}
+          </span>
+        ))
+      ) : (
+        <span className="text-xs text-gray-600 dark:text-gray-300">-</span>
+      )}
+    </div>
+  </button>
+))}
             </div>
           </div>
         )}
       </Modal>
+      <ScrollToTopButton />
     </AppShell>
   );
 }

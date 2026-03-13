@@ -26,6 +26,7 @@ import {
   type EventVisibility,
 } from "@/lib/events";
 import { addAutoLog } from "@/lib/caseManagement";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type MainCaseRow = {
   id: string;
@@ -139,6 +140,20 @@ function endOfWeek(d: Date) {
   return endOfDay(end);
 }
 
+function startOfWeekSunday(d: Date) {
+  const copy = startOfDay(d);
+  const day = copy.getDay(); // 0 = domingo
+  copy.setDate(copy.getDate() - day);
+  return copy;
+}
+
+function endOfWeekSunday(d: Date) {
+  const start = startOfWeekSunday(d);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return endOfDay(end);
+}
+
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
 }
@@ -165,8 +180,8 @@ function getMonthGridDates(anchor: Date) {
   const monthStart = startOfMonth(anchor);
   const monthEnd = endOfMonth(anchor);
 
-  const gridStart = startOfWeek(monthStart);
-  const gridEnd = endOfWeek(monthEnd);
+  const gridStart = startOfWeekSunday(monthStart);
+  const gridEnd = endOfWeekSunday(monthEnd);
 
   const dates: Date[] = [];
   let cursor = new Date(gridStart);
@@ -1324,7 +1339,7 @@ export default function CalendarPage() {
             {viewMode === "month" ? (
               <div className="mt-4">
                 <div className="grid grid-cols-7 gap-2">
-                  {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((label) => (
+                  {["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"].map((label) => (
                     <div
                       key={label}
                       className="rounded-xl bg-gray-100 px-2 py-2 text-center text-xs font-black text-gray-700 dark:bg-gray-800 dark:text-gray-200"
@@ -1862,6 +1877,7 @@ export default function CalendarPage() {
           </div>
         ) : null}
       </Modal>
+       <ScrollToTopButton />
     </AppShell>
   );
 }

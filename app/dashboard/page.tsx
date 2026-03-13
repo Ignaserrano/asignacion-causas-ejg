@@ -20,6 +20,7 @@ import { auth, db, functions } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 import { getChargeUserNetAmount, getScheduledRemainingAmount } from "@/lib/charges";
 import { listUpcomingEventsForUser, type CalendarEventRow } from "@/lib/events";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 async function exportExcel() {
   const fn = httpsCallable(functions, "adminExportCasesExcel");
@@ -848,7 +849,31 @@ export default function DashboardPage() {
             </div>
           ) : null}
         </div>
+        
       </div>
+
+      {pendingInvites > 0 ? (
+        <a
+          href="/invites"
+          className="mb-4 block rounded-xl border border-orange-200 bg-orange-50 p-4 shadow-sm transition hover:bg-orange-100 dark:border-orange-800 dark:bg-orange-900/20 dark:hover:bg-orange-900/30"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-black text-orange-900 dark:text-orange-100">
+                Invitaciones pendientes de respuesta
+              </div>
+              <div className="mt-1 text-xs text-orange-800 dark:text-orange-200">
+                Tenés {pendingInvites} invitación{pendingInvites === 1 ? "" : "es"} recibida
+                {pendingInvites === 1 ? "" : "s"} pendiente{pendingInvites === 1 ? "" : "s"}.
+              </div>
+            </div>
+
+            <div className="shrink-0 rounded-full border border-orange-300 bg-white px-3 py-1 text-sm font-black text-orange-900 dark:border-orange-700 dark:bg-orange-950/40 dark:text-orange-100">
+              {pendingInvites}
+            </div>
+          </div>
+        </a>
+      ) : null}
 
       <div className="grid gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -1366,6 +1391,7 @@ export default function DashboardPage() {
           </div>
         ) : null}
       </Modal>
+      <ScrollToTopButton />
     </AppShell>
   );
 }

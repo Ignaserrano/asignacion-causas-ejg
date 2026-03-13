@@ -22,6 +22,7 @@ import {
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type SentenceResult = "ganado" | "perdido" | "empatado";
 type Jurisdiccion = "nacional" | "federal" | "caba" | "provincia_bs_as";
@@ -863,6 +864,7 @@ export default function JurisprudenciaPage() {
           </div>
         </div>
       </Modal>
+       <ScrollToTopButton />
     </AppShell>
   );
 }

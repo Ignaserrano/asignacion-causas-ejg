@@ -19,6 +19,7 @@ import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 import { getChargeUserNetAmount, isRealPaidCharge } from "@/lib/charges";
 import { getUserProfile } from "@/lib/users";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type ChargeRow = {
   id: string;
@@ -701,6 +702,7 @@ export default function RealizadasPageClient() {
           );
         })}
       </div>
+       <ScrollToTopButton />
     </AppShell>
   );
 }

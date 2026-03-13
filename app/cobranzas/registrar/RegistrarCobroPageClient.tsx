@@ -173,6 +173,10 @@ function makeId() {
   return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 }
 
+function preventNumberWheelChange(e: React.WheelEvent<HTMLInputElement>) {
+  e.currentTarget.blur();
+}
+
 function splitPercent(total: number, count: number) {
   if (count <= 0) return [] as number[];
 
@@ -1299,17 +1303,26 @@ export default function RegistrarCobroPageClient() {
                     className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                   />
 
-                  <input
-                    type="number"
-                    value={item.amount === ("" as unknown as number) ? "" : Number(item.amount ?? "")}
-                    onChange={(e) =>
-                      updateItem(item.id, {
-                        amount:
-                          e.target.value === "" ? ("" as unknown as number) : Number(e.target.value),
-                      })
-                    }
-                    className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                  />
+                 <div className="flex min-w-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-800">
+  <span className="shrink-0 text-sm font-extrabold text-gray-700 dark:text-gray-200">
+    Monto:
+  </span>
+
+  <input
+    type="number"
+    inputMode="decimal"
+    value={item.amount === ("" as unknown as number) ? "" : Number(item.amount ?? "")}
+    onChange={(e) =>
+      updateItem(item.id, {
+        amount:
+          e.target.value === "" ? ("" as unknown as number) : Number(e.target.value),
+      })
+    }
+    onWheel={preventNumberWheelChange}
+    placeholder="0"
+    className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-sm font-semibold text-gray-900 outline-none focus:outline-none focus:ring-0 dark:text-gray-100"
+  />
+</div>
 
                   <button
                     type="button"
@@ -1435,12 +1448,20 @@ export default function RegistrarCobroPageClient() {
                       className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
                     />
 
-                    <input
-                      type="number"
-                      value={Number(d.amount ?? 0)}
-                      onChange={(e) => updateDeduction(d.id, { amount: Number(e.target.value) })}
-                      className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                    />
+                    <div className="flex min-w-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-800">
+  <span className="shrink-0 text-sm font-extrabold text-gray-700 dark:text-gray-200">
+    Monto:
+  </span>
+
+  <input
+    type="number"
+    inputMode="decimal"
+    value={Number(d.amount ?? 0)}
+    onChange={(e) => updateDeduction(d.id, { amount: Number(e.target.value) })}
+    onWheel={preventNumberWheelChange}
+    className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-sm font-semibold text-gray-900 outline-none focus:outline-none focus:ring-0 dark:text-gray-100"
+  />
+</div>
 
                     <button
                       type="button"
@@ -1530,12 +1551,20 @@ export default function RegistrarCobroPageClient() {
                       className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 disabled:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:disabled:bg-gray-700"
                     />
 
-                    <input
-                      type="number"
-                      value={Number(p.percent ?? 0)}
-                      onChange={(e) => updateParticipant(p.id, { percent: Number(e.target.value) })}
-                      className="min-w-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                    />
+                   <div className="flex min-w-0 items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-800">
+  <span className="shrink-0 text-sm font-extrabold text-gray-700 dark:text-gray-200">
+    %
+  </span>
+
+  <input
+    type="number"
+    inputMode="decimal"
+    value={Number(p.percent ?? 0)}
+    onChange={(e) => updateParticipant(p.id, { percent: Number(e.target.value) })}
+    onWheel={preventNumberWheelChange}
+    className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-sm font-semibold text-gray-900 outline-none focus:outline-none focus:ring-0 dark:text-gray-100"
+  />
+</div>
 
                     <div className="min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-black text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100">
                       {fmtMoney(calcParticipant?.amount ?? 0, currency)}

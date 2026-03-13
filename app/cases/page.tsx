@@ -25,6 +25,7 @@ import type { QueryDocumentSnapshot, DocumentData } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 
 type CaseStatus = "draft" | "assigned" | "archived";
 
@@ -41,6 +42,9 @@ type CaseRow = {
   createdAtSec: number;
   broughtByUid: string;
   archivedAt?: FirestoreDateLike;
+  requiredAssigneesCount?: number;
+  confirmedAssigneesUids?: string[];
+  assignmentMode?: "auto" | "direct";
 };
 
 const PAGE_SIZE = 25;
@@ -77,6 +81,10 @@ function safeLower(s: any) {
   return String(s ?? "").trim().toLowerCase();
 }
 
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr.filter(Boolean)));
+}
+
 async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
   const all: QueryDocumentSnapshot<T>[] = [];
   let cursor: QueryDocumentSnapshot<T> | null = null;
@@ -99,58 +107,46 @@ async function getAllDocs<T = DocumentData>(qBase: Query<T>) {
 export default function CasesAllPage() {
   const router = useRouter();
 
-  // shell
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
 
-  // page state
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // filtros
   const [filterStatus, setFilterStatus] = useState<"all" | CaseStatus>("all");
   const [filterJur, setFilterJur] = useState<string>("all");
   const [filterSpecialtyId, setFilterSpecialtyId] = useState<string>("all");
   const [filterCreatorEmail, setFilterCreatorEmail] = useState<string>("");
   const [showArchived, setShowArchived] = useState(false);
 
-  // búsqueda por carátula (ahora global)
   const [searchCaratula, setSearchCaratula] = useState<string>("");
 
-  // orden
   const [orderField, setOrderField] = useState<"createdAt" | "caratulaTentativa">("createdAt");
   const [orderDir, setOrderDir] = useState<"asc" | "desc">("desc");
 
-  // paginación
   const [page, setPage] = useState(1);
   const [pageRows, setPageRows] = useState<CaseRow[]>([]);
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [prevStack, setPrevStack] = useState<DocumentSnapshot[]>([]);
 
-  // global search mode
   const [globalRows, setGlobalRows] = useState<CaseRow[]>([]);
 
-  // totales
-  const [total, setTotal] = useState<number>(0); // total con filtros
-  const [totalWithoutFilters, setTotalWithoutFilters] = useState<number>(0); // total general
+  const [total, setTotal] = useState<number>(0);
+  const [totalWithoutFilters, setTotalWithoutFilters] = useState<number>(0);
 
-  // lookups
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
 
-  // quienes aceptaron por causa
   const [acceptedByCaseId, setAcceptedByCaseId] = useState<Record<string, string[]>>({});
+  const [inviteCountByCaseId, setInviteCountByCaseId] = useState<Record<string, number>>({});
 
-  // opciones para combos
   const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
     []
   );
 
-  // uid del creador filtrado (resuelto por email exacto)
   const [creatorUidFilter, setCreatorUidFilter] = useState<string | null>(null);
 
-  // modal eliminar
   const [deleteCaseId, setDeleteCaseId] = useState<string | null>(null);
   const [deleteCaseTitle, setDeleteCaseTitle] = useState<string>("");
   const [deleting, setDeleting] = useState(false);
@@ -168,6 +164,11 @@ export default function CasesAllPage() {
       createdAtSec: Number(data?.createdAt?.seconds ?? 0),
       broughtByUid: String(data?.broughtByUid ?? ""),
       archivedAt: data?.archivedAt?.seconds ? { seconds: data.archivedAt.seconds } : undefined,
+      requiredAssigneesCount: Number(data?.requiredAssigneesCount ?? 0),
+      confirmedAssigneesUids: Array.isArray(data?.confirmedAssigneesUids)
+        ? data.confirmedAssigneesUids
+        : [],
+      assignmentMode: (data?.assignmentMode ?? "auto") as "auto" | "direct",
     } as CaseRow;
   }
 
@@ -287,20 +288,21 @@ export default function CasesAllPage() {
     }
   }
 
-  async function loadAcceptedForCases(caseIds: string[]) {
+  async function loadInviteStatsForCases(caseIds: string[]) {
     if (!caseIds.length) return;
 
-    const entries: Array<[string, string[]]> = await Promise.all(
-      caseIds.map(async (caseId): Promise<[string, string[]]> => {
+    const entries = await Promise.all(
+      caseIds.map(async (caseId) => {
         try {
-          const qInv = query(
-            collection(db, "cases", caseId, "invites"),
-            where("status", "==", "accepted")
-          );
-          const snap = await getDocs(qInv);
+          const snap = await getDocs(collection(db, "cases", caseId, "invites"));
 
-          const emails = await Promise.all(
-            snap.docs.map(async (d) => {
+          const acceptedDocs = snap.docs.filter((d) => {
+            const data = d.data() as any;
+            return data?.status === "accepted";
+          });
+
+          const acceptedEmails = await Promise.all(
+            acceptedDocs.map(async (d) => {
               const data = d.data() as any;
               const byEmail = safeLower(data?.invitedEmail);
               if (byEmail) return byEmail;
@@ -311,19 +313,48 @@ export default function CasesAllPage() {
             })
           );
 
-          const cleaned = Array.from(new Set(emails.filter(Boolean))).sort();
-          return [caseId, cleaned];
+          return {
+            caseId,
+            acceptedEmails: Array.from(new Set(acceptedEmails.filter(Boolean))).sort(),
+            inviteCount: snap.size,
+          };
         } catch {
-          return [caseId, []];
+          return {
+            caseId,
+            acceptedEmails: [] as string[],
+            inviteCount: 0,
+          };
         }
       })
     );
 
     setAcceptedByCaseId((prev) => {
-      const next: Record<string, string[]> = { ...prev };
-      for (const [caseId, list] of entries) next[caseId] = list;
+      const next = { ...prev };
+      entries.forEach((x) => {
+        next[x.caseId] = x.acceptedEmails;
+      });
       return next;
     });
+
+    setInviteCountByCaseId((prev) => {
+      const next = { ...prev };
+      entries.forEach((x) => {
+        next[x.caseId] = x.inviteCount;
+      });
+      return next;
+    });
+  }
+
+  function getCaseTargetCount(r: CaseRow) {
+    const confirmed = uniq(r.confirmedAssigneesUids ?? []).length;
+    const inviteCount = Number(inviteCountByCaseId[r.id] ?? 0);
+    const required = Number(r.requiredAssigneesCount ?? 0);
+
+    if (r.assignmentMode === "direct") {
+      return Math.max(inviteCount, required, confirmed, 1);
+    }
+
+    return Math.max(required || 2, confirmed, 1);
   }
 
   async function loadNormalPage(resetToFirst: boolean) {
@@ -346,7 +377,7 @@ export default function CasesAllPage() {
       setTotalWithoutFilters(totalDocsWithoutFilters.length);
 
       await ensureLookupsForRows(rows);
-      await loadAcceptedForCases(rows.map((r) => r.id));
+      await loadInviteStatsForCases(rows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error cargando causas");
     } finally {
@@ -378,7 +409,7 @@ export default function CasesAllPage() {
 
       const firstPageRows = filtered.slice(0, PAGE_SIZE);
       await ensureLookupsForRows(firstPageRows);
-      await loadAcceptedForCases(firstPageRows.map((r) => r.id));
+      await loadInviteStatsForCases(firstPageRows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error cargando búsqueda global");
     } finally {
@@ -530,7 +561,7 @@ export default function CasesAllPage() {
     (async () => {
       if (!visibleRows.length) return;
       await ensureLookupsForRows(visibleRows);
-      await loadAcceptedForCases(visibleRows.map((r) => r.id));
+      await loadInviteStatsForCases(visibleRows.map((r) => r.id));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleRows]);
@@ -597,7 +628,7 @@ export default function CasesAllPage() {
       setLastDoc(snap.docs.length ? snap.docs[snap.docs.length - 1] : null);
 
       await ensureLookupsForRows(rows);
-      await loadAcceptedForCases(rows.map((r) => r.id));
+      await loadInviteStatsForCases(rows.map((r) => r.id));
     } catch (e: any) {
       setMsg(e?.message ?? "Error");
     } finally {
@@ -783,98 +814,110 @@ export default function CasesAllPage() {
               No hay causas con esos filtros{searchCaratula ? " y esa carátula." : "."}
             </div>
           ) : (
-            visibleRows.map((r) => (
-              <div
-                key={r.id}
-                className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-[240px]">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="font-black text-gray-900 dark:text-gray-100">
-                        {r.caratulaTentativa || "(sin carátula)"}{" "}
-                        <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
-                          (#{r.id})
+            visibleRows.map((r) => {
+              const confirmed = uniq(r.confirmedAssigneesUids ?? []).length;
+              const required = getCaseTargetCount(r);
+              const missing = Math.max(0, required - confirmed);
+
+              return (
+                <div
+                  key={r.id}
+                  className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-[240px]">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-black text-gray-900 dark:text-gray-100">
+                          {r.caratulaTentativa || "(sin carátula)"}{" "}
+                          <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+                            (#{r.id})
+                          </span>
+                        </div>
+
+                        {r.status === "archived" ? (
+                          <Badge tone="archived">
+                            ARCHIVADA · {formatDateFromSeconds(r.archivedAt?.seconds)}
+                          </Badge>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
+                        <span>
+                          Materia:{" "}
+                          <span className="font-bold">
+                            {specialtyNameById[r.specialtyId] ?? r.specialtyId ?? "-"}
+                          </span>
+                        </span>
+                        <span>
+                          Jurisdicción: <span className="font-bold">{r.jurisdiccion || "-"}</span>
+                        </span>
+                        <span>
+                          Creada:{" "}
+                          <span className="font-bold">{formatDateFromSeconds(r.createdAtSec)}</span>
+                        </span>
+                        <span>
+                          Creador: <span className="font-bold">{creatorEmailShown(r.broughtByUid)}</span>
                         </span>
                       </div>
 
-                      {r.status === "archived" ? (
-                        <Badge tone="archived">
-                          ARCHIVADA · {formatDateFromSeconds(r.archivedAt?.seconds)}
-                        </Badge>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
-                      <span>
-                        Materia:{" "}
-                        <span className="font-bold">
-                          {specialtyNameById[r.specialtyId] ?? r.specialtyId ?? "-"}
-                        </span>
-                      </span>
-                      <span>
-                        Jurisdicción: <span className="font-bold">{r.jurisdiccion || "-"}</span>
-                      </span>
-                      <span>
-                        Creada:{" "}
-                        <span className="font-bold">{formatDateFromSeconds(r.createdAtSec)}</span>
-                      </span>
-                      <span>
-                        Creador: <span className="font-bold">{creatorEmailShown(r.broughtByUid)}</span>
-                      </span>
-                    </div>
-
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
-                      <span>Aceptada por:</span>
-                      {acceptedByCaseId[r.id] ? (
-                        acceptedByCaseId[r.id].length ? (
-                          <div className="flex flex-wrap gap-2">
-                            {acceptedByCaseId[r.id].map((e) => (
-                              <Badge key={e}>{e}</Badge>
-                            ))}
-                          </div>
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700 dark:text-gray-200">
+                        <span>Aceptada por:</span>
+                        {acceptedByCaseId[r.id] ? (
+                          acceptedByCaseId[r.id].length ? (
+                            <div className="flex flex-wrap gap-2">
+                              {acceptedByCaseId[r.id].map((e) => (
+                                <Badge key={e}>{e}</Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-sm text-gray-700 dark:text-gray-200">Nadie aún</span>
+                          )
                         ) : (
-                          <span className="text-sm text-gray-700 dark:text-gray-200">Nadie aún</span>
-                        )
+                          <span className="text-sm text-gray-700 dark:text-gray-200">Cargando...</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {r.status === "archived" ? (
+                        <Badge tone="archived">ARCHIVADA</Badge>
+                      ) : r.status === "assigned" ? (
+                        <Badge tone="ok">ASIGNADA</Badge>
                       ) : (
-                        <span className="text-sm text-gray-700 dark:text-gray-200">Cargando...</span>
+                        <Badge>PENDIENTE</Badge>
                       )}
+
+                      <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                        {missing > 0
+                          ? `faltan ${missing} (${confirmed}/${required})`
+                          : `completo (${confirmed}/${required})`}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {r.status === "archived" ? (
-                      <Badge tone="archived">ARCHIVADA</Badge>
-                    ) : r.status === "assigned" ? (
-                      <Badge tone="ok">ASIGNADA</Badge>
-                    ) : (
-                      <Badge>PENDIENTE</Badge>
-                    )}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Link
+                      href={`/cases/${r.id}`}
+                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+                    >
+                      Ver detalle →
+                    </Link>
+
+                    {role === "admin" ? (
+                      <button
+                        onClick={() => {
+                          setDeleteCaseId(r.id);
+                          setDeleteCaseTitle(r.caratulaTentativa || "(sin carátula)");
+                        }}
+                        className="rounded-xl border border-red-300 bg-red-600 px-3 py-2 text-sm font-extrabold text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-700 dark:hover:bg-red-800"
+                      >
+                        Eliminar causa
+                      </button>
+                    ) : null}
                   </div>
                 </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Link
-                    href={`/cases/${r.id}`}
-                    className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                  >
-                    Ver detalle →
-                  </Link>
-
-                  {role === "admin" ? (
-                    <button
-                      onClick={() => {
-                        setDeleteCaseId(r.id);
-                        setDeleteCaseTitle(r.caratulaTentativa || "(sin carátula)");
-                      }}
-                      className="rounded-xl border border-red-300 bg-red-600 px-3 py-2 text-sm font-extrabold text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-700 dark:hover:bg-red-800"
-                    >
-                      Eliminar causa
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       ) : null}
@@ -959,6 +1002,11 @@ export default function CasesAllPage() {
                       delete next[removedId];
                       return next;
                     });
+                    setInviteCountByCaseId((prev) => {
+                      const next = { ...prev };
+                      delete next[removedId];
+                      return next;
+                    });
 
                     const nextTotal = Math.max(0, total - 1);
                     const nextTotalWithoutFilters = Math.max(0, totalWithoutFilters - 1);
@@ -982,6 +1030,7 @@ export default function CasesAllPage() {
           </div>
         </div>
       ) : null}
+      <ScrollToTopButton />
     </AppShell>
   );
 }
