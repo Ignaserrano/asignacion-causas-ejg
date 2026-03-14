@@ -17,6 +17,7 @@ import {
 } from "firebase/firestore";
 
 import { auth, db } from "@/lib/firebase";
+import ScrollToTopButton from "@/components/ScrollToTopButton";
 import AppShell from "@/components/AppShell";
 import {
   finalizeDirectAssignment,
@@ -40,6 +41,7 @@ type CaseDoc = {
   manualReplacementNeeded?: boolean;
   manualReplacementReason?: string;
   fallbackReplacementMode?: boolean;
+  createdAt?: { seconds?: number };
 };
 
 type InviteDoc = {
@@ -53,15 +55,51 @@ type InviteDoc = {
   createdByUid?: string;
 };
 
-type UserDoc = { email?: string };
+type UserDoc = {
+  email?: string;
+};
 
 type UserOption = {
   uid: string;
   email: string;
 };
 
+type SpecialtyDoc = {
+  name?: string;
+};
+
 function uniq(arr: string[]) {
   return Array.from(new Set(arr.filter(Boolean)));
+}
+
+function formatDateFromSeconds(seconds?: number) {
+  if (!seconds) return "-";
+  return new Date(seconds * 1000).toLocaleString();
+}
+
+function formatAssignmentMode(mode?: "auto" | "direct") {
+  if (mode === "direct") return "Directa";
+  if (mode === "auto") return "Automática";
+  return "-";
+}
+
+function formatJurisdiccion(j?: string) {
+  switch (j) {
+    case "nacional":
+      return "Nacional";
+    case "federal":
+      return "Federal";
+    case "caba":
+      return "CABA";
+    case "provincia_bs_as":
+      return "Provincia de Buenos Aires";
+    case "entre_rios":
+      return "Entre Ríos";
+    case "otras":
+      return "Otras";
+    default:
+      return j || "-";
+  }
 }
 
 function Badge({
@@ -90,7 +128,32 @@ function Badge({
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <div className="mt-6 text-sm font-black text-gray-900 dark:text-gray-100">{children}</div>;
+  return (
+    <div className="mt-6 mb-2 text-sm font-black text-gray-900 dark:text-gray-100">
+      {children}
+    </div>
+  );
+}
+
+function InfoItem({
+  label,
+  value,
+  full = false,
+}: {
+  label: string;
+  value: React.ReactNode;
+  full?: boolean;
+}) {
+  return (
+    <div className={full ? "md:col-span-2" : ""}>
+      <div className="text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+        {value}
+      </div>
+    </div>
+  );
 }
 
 export default function CaseDetailPage() {
@@ -107,9 +170,9 @@ export default function CaseDetailPage() {
 
   const [c, setC] = useState<CaseDoc | null>(null);
   const [invites, setInvites] = useState<Array<{ id: string } & InviteDoc>>([]);
-
   const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
   const [lawyerOptions, setLawyerOptions] = useState<UserOption[]>([]);
+  const [specialtyName, setSpecialtyName] = useState<string>("");
 
   const [replacementUid, setReplacementUid] = useState("");
   const [replacementJustification, setReplacementJustification] = useState("");
@@ -146,7 +209,9 @@ export default function CaseDetailPage() {
       }
 
       try {
-        const usersSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
+        const usersSnap = await getDocs(
+          query(collection(db, "users"), orderBy("email", "asc"))
+        );
         const list = usersSnap.docs
           .map((d) => {
             const data = d.data() as any;
@@ -210,8 +275,8 @@ export default function CaseDetailPage() {
     (c?.confirmedAssigneesUids ?? []).forEach((u) => uids.add(u));
     invites.forEach((i) => {
       if (i.invitedUid) uids.add(i.invitedUid);
+      if (i.createdByUid) uids.add(i.createdByUid);
     });
-
     if (c?.broughtByUid) uids.add(c.broughtByUid);
 
     const missing = Array.from(uids).filter((uid) => uid && !emailByUid[uid]);
@@ -238,8 +303,30 @@ export default function CaseDetailPage() {
 
       setEmailByUid(newMap);
     })();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c?.confirmedAssigneesUids, c?.broughtByUid, invites]);
+
+  useEffect(() => {
+    if (!c?.specialtyId) {
+      setSpecialtyName("");
+      return;
+    }
+
+    (async () => {
+      try {
+        const spSnap = await getDoc(doc(db, "specialties", c.specialtyId));
+        if (spSnap.exists()) {
+          const sp = spSnap.data() as SpecialtyDoc;
+          setSpecialtyName(String(sp?.name ?? c.specialtyId));
+        } else {
+          setSpecialtyName(c.specialtyId);
+        }
+      } catch {
+        setSpecialtyName(c.specialtyId);
+      }
+    })();
+  }, [c?.specialtyId]);
 
   const confirmedCount = uniq(c?.confirmedAssigneesUids ?? []).length;
 
@@ -266,16 +353,11 @@ export default function CaseDetailPage() {
   const showManualPanel =
     isCreator &&
     status !== "assigned" &&
-    (
-      (isDirect && rejectedInvites.length > 0) ||
-      (!isDirect && Boolean(c?.manualReplacementNeeded))
-    );
+    ((isDirect && rejectedInvites.length > 0) ||
+      (!isDirect && Boolean(c?.manualReplacementNeeded)));
 
   const canCloseWithoutReplacement =
-    isDirect &&
-    confirmedCount >= 2 &&
-    pendingInvitesInCase === 0 &&
-    status !== "assigned";
+    isDirect && confirmedCount >= 2 && pendingInvitesInCase === 0 && status !== "assigned";
 
   const alreadyUsedUids = useMemo(() => {
     return new Set(
@@ -291,8 +373,13 @@ export default function CaseDetailPage() {
     return !alreadyUsedUids.has(l.uid);
   });
 
+  const creatorEmail = c?.broughtByUid
+    ? (emailByUid[c.broughtByUid] ?? "Cargando...")
+    : "-";
+
   async function handleInviteReplacement() {
     if (!caseId) return;
+
     if (!replacementUid) {
       alert("Seleccioná un abogado para invitar.");
       return;
@@ -307,7 +394,6 @@ export default function CaseDetailPage() {
         newInvitedUid: replacementUid,
         justification: replacementJustification.trim(),
       });
-
       setReplacementUid("");
       setReplacementJustification("");
       setMsg("✅ Reemplazo invitado correctamente.");
@@ -351,6 +437,7 @@ export default function CaseDetailPage() {
 
   async function copyLink() {
     if (!caseId) return;
+
     const url = `${window.location.origin}/cases/${caseId}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -362,8 +449,11 @@ export default function CaseDetailPage() {
 
   function shareWhatsApp() {
     if (!caseId) return;
+
     const text = encodeURIComponent(
-      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${window.location.origin}/cases/${caseId}`
+      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${
+        window.location.origin
+      }/cases/${caseId}`
     );
     window.open(`https://wa.me/?text=${text}`, "_blank", "noopener,noreferrer");
   }
@@ -374,11 +464,11 @@ export default function CaseDetailPage() {
     const subject = encodeURIComponent(
       c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"
     );
-
     const body = encodeURIComponent(
-      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${window.location.origin}/cases/${caseId}`
+      `${c?.caratulaTentativa ? `Causa: ${c.caratulaTentativa}` : "Detalle de causa"}\n${
+        window.location.origin
+      }/cases/${caseId}`
     );
-
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
   }
 
@@ -394,11 +484,16 @@ export default function CaseDetailPage() {
   if (!caseId) {
     return (
       <AppShell
-        title="Causa"
+        title="Detalle de asignación"
         userEmail={user?.email ?? null}
         role={role}
         pendingInvites={pendingInvites}
         onLogout={doLogout}
+        breadcrumbs={[
+          { label: "Inicio", href: "/dashboard" },
+          { label: "Mis causas", href: "/cases/mine" },
+          { label: "Detalle de asignación" },
+        ]}
       >
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           ID inválido.
@@ -411,11 +506,16 @@ export default function CaseDetailPage() {
 
   return (
     <AppShell
-      title="Detalle de causa"
+      title="Detalle de asignación"
       userEmail={user?.email ?? null}
       role={role}
       pendingInvites={pendingInvites}
       onLogout={doLogout}
+      breadcrumbs={[
+        { label: "Inicio", href: "/dashboard" },
+        { label: "Mis causas", href: "/cases/mine" },
+        { label: "Detalle de asignación" },
+      ]}
     >
       <style jsx global>{`
         @media print {
@@ -435,7 +535,9 @@ export default function CaseDetailPage() {
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs text-gray-600 dark:text-gray-300">Causa</div>
-          <h1 className="text-xl font-black text-gray-900 dark:text-gray-100">{title}</h1>
+          <h1 className="text-xl font-black text-gray-900 dark:text-gray-100">
+            {title}
+          </h1>
           <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">#{caseId}</div>
         </div>
 
@@ -501,7 +603,6 @@ export default function CaseDetailPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 {status === "assigned" ? <Badge tone="ok">ASIGNADA</Badge> : <Badge>DRAFT</Badge>}
-
                 {missingCount > 0 ? (
                   <div className="text-sm text-gray-700 dark:text-gray-200">
                     Faltan <span className="font-black">{missingCount}</span> confirmaciones (
@@ -512,15 +613,14 @@ export default function CaseDetailPage() {
                     Cupo completo ({confirmedCount}/{required})
                   </div>
                 )}
-
                 {c.assignmentMode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : null}
                 {c.assignmentMode === "auto" ? <Badge>AUTOMÁTICA</Badge> : null}
               </div>
 
               <div className="text-sm text-gray-700 dark:text-gray-200">
-                Invites: <span className="font-black">{inviteStats.pending}</span> pend ·{" "}
-                <span className="font-black">{inviteStats.accepted}</span> acep ·{" "}
-                <span className="font-black">{inviteStats.rejected}</span> rech
+                Invitaciones: <span className="font-black">{inviteStats.pending}</span> pendientes ·{" "}
+                <span className="font-black">{inviteStats.accepted}</span> aceptadas ·{" "}
+                <span className="font-black">{inviteStats.rejected}</span> rechazadas
               </div>
             </div>
           </div>
@@ -600,24 +700,78 @@ export default function CaseDetailPage() {
             </div>
           ) : null}
 
-          <SectionTitle>
-            Confirmados ({confirmedCount}/{required})
-          </SectionTitle>
+          <SectionTitle>Información de la causa</SectionTitle>
           <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            {confirmedCount === 0 ? (
-              <div className="text-sm text-gray-700 dark:text-gray-200">Todavía no hay confirmados.</div>
-            ) : (
-              <ul className="ml-5 list-disc text-sm text-gray-800 dark:text-gray-100">
-                {uniq(c.confirmedAssigneesUids ?? []).map((u) => (
-                  <li key={u} className="my-2">
-                    <span className="font-black">{emailByUid[u] ?? "Cargando..."}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <InfoItem
+                label="Carátula"
+                value={c.caratulaTentativa || "(sin carátula)"}
+                full
+              />
+              <InfoItem
+                label="Jurisdicción"
+                value={formatJurisdiccion(c.jurisdiccion)}
+              />
+              <InfoItem
+                label="Materia"
+                value={specialtyName || c.specialtyId || "-"}
+              />
+              <InfoItem
+                label="Modo de asignación"
+                value={formatAssignmentMode(c.assignmentMode)}
+              />
+              <InfoItem
+                label="Estado"
+                value={status === "assigned" ? "Asignada" : "Pendiente"}
+              />
+              <InfoItem
+                label="Cantidad requerida"
+                value={required}
+              />
+              <InfoItem
+                label="Creada"
+                value={formatDateFromSeconds(c.createdAt?.seconds)}
+              />
+              <InfoItem
+                label="Participa el creador"
+                value={c.broughtByParticipates ? "Sí" : "No"}
+              />
+              <InfoItem
+                label="Objeto"
+                value={c.objeto || "-"}
+                full
+              />
+              <InfoItem
+                label="Resumen"
+                value={c.resumen || "-"}
+                full
+              />
+              {c.directJustification ? (
+                <InfoItem
+                  label="Justificación de asignación directa"
+                  value={c.directJustification}
+                  full
+                />
+              ) : null}
+              {c.manualReplacementReason ? (
+                <InfoItem
+                  label="Motivo de reemplazo manual"
+                  value={c.manualReplacementReason}
+                  full
+                />
+              ) : null}
+            </div>
           </div>
 
-          <SectionTitle>Invitaciones</SectionTitle>
+          <SectionTitle>Creador</SectionTitle>
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="grid gap-4 md:grid-cols-2">
+              <InfoItem label="Email" value={creatorEmail} />
+              <InfoItem label="UID" value={c.broughtByUid || "-"} />
+            </div>
+          </div>
+
+          <SectionTitle>Invitados</SectionTitle>
           <div className="grid gap-3">
             {invites.length === 0 ? (
               <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200">
@@ -627,9 +781,9 @@ export default function CaseDetailPage() {
               invites.map((i) => {
                 const uid = i.invitedUid ?? "";
                 const emailShown =
-                  i.invitedEmail ||
-                  (uid ? emailByUid[uid] : "") ||
-                  "(Cargando...)";
+                  i.invitedEmail || (uid ? emailByUid[uid] : "") || "(Cargando...)";
+                const createdByEmail =
+                  i.createdByUid ? emailByUid[i.createdByUid] || "Cargando..." : "-";
 
                 return (
                   <div
@@ -638,13 +792,20 @@ export default function CaseDetailPage() {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-[240px]">
-                        <div className="font-extrabold text-gray-900 dark:text-gray-100">{emailShown}</div>
+                        <div className="font-extrabold text-gray-900 dark:text-gray-100">
+                          {emailShown}
+                        </div>
+                        <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                          Invitado por: {createdByEmail}
+                        </div>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
                         {i.mode === "direct" ? <Badge tone="warn">DIRECTA</Badge> : null}
                         {i.mode === "auto" ? <Badge>AUTOMÁTICA</Badge> : null}
-                        {i.mode === "manual_fallback" ? <Badge tone="warn">REEMPLAZO MANUAL</Badge> : null}
+                        {i.mode === "manual_fallback" ? (
+                          <Badge tone="warn">REEMPLAZO MANUAL</Badge>
+                        ) : null}
 
                         {i.status === "pending" ? (
                           <Badge>PENDIENTE</Badge>
@@ -654,6 +815,17 @@ export default function CaseDetailPage() {
                           <Badge tone="bad">RECHAZADA</Badge>
                         )}
                       </div>
+                    </div>
+
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <InfoItem
+                        label="Invitado el"
+                        value={formatDateFromSeconds(i.invitedAt?.seconds)}
+                      />
+                      <InfoItem
+                        label="Respondido el"
+                        value={formatDateFromSeconds(i.respondedAt?.seconds)}
+                      />
                     </div>
 
                     {i.directJustification ? (
@@ -666,8 +838,27 @@ export default function CaseDetailPage() {
               })
             )}
           </div>
+
+          <SectionTitle>Confirmados ({confirmedCount}/{required})</SectionTitle>
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            {confirmedCount === 0 ? (
+              <div className="text-sm text-gray-700 dark:text-gray-200">
+                Todavía no hay confirmados.
+              </div>
+            ) : (
+              <ul className="ml-5 list-disc text-sm text-gray-800 dark:text-gray-100">
+                {uniq(c.confirmedAssigneesUids ?? []).map((u) => (
+                  <li key={u} className="my-2">
+                    <span className="font-black">{emailByUid[u] ?? "Cargando..."}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </>
       ) : null}
+
+            <ScrollToTopButton />
     </AppShell>
   );
 }

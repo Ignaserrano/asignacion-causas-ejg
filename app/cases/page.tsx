@@ -710,6 +710,8 @@ export default function CasesAllPage() {
                 <option value="federal">Federal</option>
                 <option value="caba">CABA</option>
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
+              <option value="entre_rios">Entre Ríos</option>
+              <option value="otras">Otras</option>
               </select>
             </label>
 

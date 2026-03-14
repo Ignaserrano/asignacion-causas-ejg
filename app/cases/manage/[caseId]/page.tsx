@@ -2457,7 +2457,7 @@ const proofControlItems = Array.isArray((meta as any)?.proofControl)
                   disabled={!canWrite}
                   className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                 >
-                  Modificar
+                  Modificar Información de la causa
                 </button>
               </div>
 
@@ -2539,7 +2539,7 @@ const proofControlItems = Array.isArray((meta as any)?.proofControl)
                       onClick={openLawyersModal}
                       className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
                     >
-                      Modificar
+                      Modificar abogados
                     </button>
                   ) : null}
                 </div>

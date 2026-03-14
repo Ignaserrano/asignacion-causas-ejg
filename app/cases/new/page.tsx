@@ -19,7 +19,14 @@ import { getUserProfile } from "@/lib/users";
 import { listActiveSpecialties, listPracticingUsers } from "@/lib/data";
 import { createCaseWithInvites } from "@/lib/cases";
 
-type Jurisdiccion = "nacional" | "federal" | "caba" | "provincia_bs_as";
+type Jurisdiccion =
+  | "nacional"
+  | "federal"
+  | "caba"
+  | "provincia_bs_as"
+  | "entre_rios"
+  | "otras";
+
 type AssignmentMode = "auto" | "direct";
 
 type Specialty = { id: string; name: string; active: boolean };
@@ -324,6 +331,8 @@ function NewCasePageInner() {
             <option value="federal">Federal</option>
             <option value="caba">CABA</option>
             <option value="provincia_bs_as">Provincia de Bs. As.</option>
+            <option value="entre_rios">Entre Ríos</option>
+            <option value="otras">Otras</option>
           </select>
         </label>
 

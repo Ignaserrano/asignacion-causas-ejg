@@ -564,8 +564,15 @@ export default function ManageCasesPage() {
                 <option value="preliminar">Preliminar</option>
                 <option value="iniciada">Iniciada</option>
                 <option value="en_prueba">En prueba</option>
+                <option value="a_alegar">A alegar</option>
                 <option value="a_sentencia">A sentencia</option>
                 <option value="en_apelacion">En apelación</option>
+                <option value="en_ejecucion">En ejecución</option>
+<option value="con_sentencia_primera_instancia">Con sentencia de primera instancia</option>
+                <option value="con_sentencia_segunda_instancia">Con sentencia de segunda instancia</option>
+                <option value="con_sentencia_ulterior_instancia">Con sentencia de ulterior instancia</option>
+                <option value="recurso_extraordinario_local">Recurso Extraordinario Local</option>
+                <option value="ref">REF</option>
                 <option value="en_ejecucion">En ejecución</option>
               </select>
             </label>
@@ -582,6 +589,8 @@ export default function ManageCasesPage() {
                 <option value="federal">Federal</option>
                 <option value="caba">CABA</option>
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
+                <option value="entre_rios">Entre Ríos</option>
+                <option value="otras">Otras</option>
               </select>
             </label>
 

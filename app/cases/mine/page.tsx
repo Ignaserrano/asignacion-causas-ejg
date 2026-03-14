@@ -45,7 +45,13 @@ type CaseRow = {
   assignmentMode?: "auto" | "direct";
 };
 
-type SpecialtyDoc = { name?: string };
+type SpecialtyDoc = {
+  name?: string;
+};
+
+type UserDoc = {
+  email?: string;
+};
 
 const PAGE_SIZE = 25;
 
@@ -116,10 +122,10 @@ export default function MyCasesPage() {
   // data
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
-
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [specialtyNameById, setSpecialtyNameById] = useState<Record<string, string>>({});
   const [inviteCountByCaseId, setInviteCountByCaseId] = useState<Record<string, number>>({});
+  const [emailByUid, setEmailByUid] = useState<Record<string, string>>({});
 
   // opciones (combo Materia)
   const [specialtiesOptions, setSpecialtiesOptions] = useState<Array<{ id: string; name: string }>>(
@@ -170,7 +176,7 @@ export default function MyCasesPage() {
         setRole("lawyer");
       }
 
-      // pending invites (badge tabs)
+      // pending invites
       try {
         const qPending = query(
           collectionGroup(db, "invites"),
@@ -196,7 +202,7 @@ export default function MyCasesPage() {
         // ok
       }
 
-      // opciones de abogados (emails)
+      // opciones de abogados
       try {
         const usersSnap = await getDocs(query(collection(db, "users"), orderBy("email", "asc")));
         const list = usersSnap.docs
@@ -206,7 +212,6 @@ export default function MyCasesPage() {
             return { uid: d.id, email };
           })
           .filter((x) => Boolean(x.email));
-
         setLawyerOptions(list);
       } catch {
         setLawyerOptions([]);
@@ -259,7 +264,9 @@ export default function MyCasesPage() {
             try {
               const caseSnap = await getDoc(doc(db, "cases", caseId));
               if (caseSnap.exists()) addCaseDoc(caseId, caseSnap.data());
-            } catch {}
+            } catch {
+              // ignore
+            }
           })
         );
 
@@ -304,6 +311,38 @@ export default function MyCasesPage() {
 
       setSpecialtyNameById(newMap);
     })();
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
+
+  // emails de creadores / participantes
+  useEffect(() => {
+    const uids = Array.from(new Set(rows.map((r) => String(r.broughtByUid ?? "")).filter(Boolean)));
+    const missing = uids.filter((uid) => emailByUid[uid] === undefined);
+    if (missing.length === 0) return;
+
+    (async () => {
+      const newMap = { ...emailByUid };
+
+      await Promise.all(
+        missing.map(async (uid) => {
+          try {
+            const userSnap = await getDoc(doc(db, "users", uid));
+            if (userSnap.exists()) {
+              const u = userSnap.data() as UserDoc;
+              newMap[uid] = u.email ? String(u.email).trim() : "";
+            } else {
+              newMap[uid] = "";
+            }
+          } catch {
+            newMap[uid] = "";
+          }
+        })
+      );
+
+      setEmailByUid(newMap);
+    })();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
 
@@ -330,7 +369,6 @@ export default function MyCasesPage() {
       entries.forEach(([caseId, count]) => {
         next[caseId] = count;
       });
-
       setInviteCountByCaseId(next);
     })();
   }, [rows]);
@@ -352,7 +390,7 @@ export default function MyCasesPage() {
     }
   }, [showArchived, filterStatus]);
 
-  // reset a página 1 si cambian filtros
+  // reset página
   useEffect(() => {
     setPage(1);
   }, [
@@ -366,12 +404,14 @@ export default function MyCasesPage() {
     showArchived,
   ]);
 
-  // helper participantes por causa
   const caseParticipants = (r: CaseRow) => {
     const p = Array.isArray(r.participantsUids) ? r.participantsUids : [];
     if (p.length) return uniq(p);
 
-    return uniq([String(r.broughtByUid ?? ""), ...((r.confirmedAssigneesUids ?? []) as string[])]);
+    return uniq([
+      String(r.broughtByUid ?? ""),
+      ...((r.confirmedAssigneesUids ?? []) as string[]),
+    ]);
   };
 
   const getCaseTargetCount = (r: CaseRow) => {
@@ -382,8 +422,14 @@ export default function MyCasesPage() {
     if (r.assignmentMode === "direct") {
       return Math.max(inviteCount, required, confirmed, 1);
     }
-
     return Math.max(required || 2, confirmed, 1);
+  };
+
+  const creatorEmailShown = (uid?: string) => {
+    if (!uid) return "-";
+    const email = emailByUid[uid];
+    if (email === undefined) return "Cargando...";
+    return email || "-";
   };
 
   const filteredSorted = useMemo(() => {
@@ -391,11 +437,11 @@ export default function MyCasesPage() {
 
     const base = rows.filter((r) => {
       if (!showArchived && r.status === "archived") return false;
-
       if (filterStatus !== "all" && r.status !== filterStatus) return false;
       if (filterJur !== "all" && String(r.jurisdiccion ?? "") !== filterJur) return false;
-      if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId)
+      if (filterSpecialtyId !== "all" && String(r.specialtyId ?? "") !== filterSpecialtyId) {
         return false;
+      }
 
       if (sharedWithUidFilter) {
         if (sharedWithUidFilter === "__none__") return false;
@@ -416,13 +462,14 @@ export default function MyCasesPage() {
         const as = Number(a.createdAt?.seconds ?? 0);
         const bs = Number(b.createdAt?.seconds ?? 0);
         return orderDir === "asc" ? as - bs : bs - as;
-      } else {
-        const ac = safeLower(a.caratulaTentativa);
-        const bc = safeLower(b.caratulaTentativa);
-        if (ac < bc) return orderDir === "asc" ? -1 : 1;
-        if (ac > bc) return orderDir === "asc" ? 1 : -1;
-        return 0;
       }
+
+      const ac = safeLower(a.caratulaTentativa);
+      const bc = safeLower(b.caratulaTentativa);
+
+      if (ac < bc) return orderDir === "asc" ? -1 : 1;
+      if (ac > bc) return orderDir === "asc" ? 1 : -1;
+      return 0;
     });
 
     return sorted;
@@ -471,6 +518,10 @@ export default function MyCasesPage() {
     router.replace("/login");
   }
 
+  function openCase(caseId: string) {
+    router.push(`/cases/${caseId}`);
+  }
+
   return (
     <AppShell
       title="Mis causas"
@@ -489,7 +540,7 @@ export default function MyCasesPage() {
           {totalFiltered > 0 ? (
             <>
               {" "}
-              · Rango <span className="font-bold">{showingText.start}</span>–{" "}
+              · Rango <span className="font-bold">{showingText.start}</span>–
               <span className="font-bold">{showingText.end}</span>
             </>
           ) : null}{" "}
@@ -536,6 +587,8 @@ export default function MyCasesPage() {
                 <option value="federal">Federal</option>
                 <option value="caba">CABA</option>
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
+                 <option value="entre_rios">Entre Ríos</option>
+                 <option value="otras">Otras</option> 
               </select>
             </label>
 
@@ -654,17 +707,23 @@ export default function MyCasesPage() {
               return (
                 <div
                   key={r.id}
-                  className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openCase(r.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openCase(r.id);
+                    }
+                  }}
+                  className="cursor-pointer rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 hover:shadow-md dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-[240px]">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Link
-                          href={`/cases/${r.id}`}
-                          className="font-black text-gray-900 hover:underline dark:text-gray-100"
-                        >
+                        <div className="font-black text-gray-900 dark:text-gray-100">
                           {r.caratulaTentativa || "(sin carátula)"}
-                        </Link>
+                        </div>
 
                         {r.status === "archived" ? (
                           <Badge tone="archived">
@@ -681,7 +740,9 @@ export default function MyCasesPage() {
                         · Jurisdicción: <span className="font-bold">{r.jurisdiccion}</span> · Creada:{" "}
                         <span className="font-bold">
                           {formatDateFromSeconds(r.createdAt?.seconds)}
-                        </span>
+                        </span>{" "}
+                        · Creador:{" "}
+                        <span className="font-bold">{creatorEmailShown(r.broughtByUid)}</span>
                       </div>
                     </div>
 
@@ -700,15 +761,6 @@ export default function MyCasesPage() {
                           : `completo (${confirmed}/${required})`}
                       </span>
                     </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <Link
-                      href={`/cases/${r.id}`}
-                      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Ver detalle →
-                    </Link>
                   </div>
                 </div>
               );
@@ -743,10 +795,11 @@ export default function MyCasesPage() {
 
       {lawyerOptions.length === 0 ? (
         <div className="mt-3 text-xs text-gray-600 dark:text-gray-400">
-          Nota: no pude cargar la lista de abogados (users). Revisá reglas de Firestore para permitir leer
-          emails de usuarios del estudio.
+          Nota: no pude cargar la lista de abogados (users). Revisá reglas de Firestore para permitir
+          leer emails de usuarios del estudio.
         </div>
       ) : null}
+
       <ScrollToTopButton />
     </AppShell>
   );
