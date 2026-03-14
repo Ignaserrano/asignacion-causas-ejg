@@ -308,25 +308,28 @@ export default function CaseDetailPage() {
   }, [c?.confirmedAssigneesUids, c?.broughtByUid, invites]);
 
   useEffect(() => {
-    if (!c?.specialtyId) {
-      setSpecialtyName("");
-      return;
-    }
+  const specialtyId = String(c?.specialtyId ?? "").trim();
 
-    (async () => {
-      try {
-        const spSnap = await getDoc(doc(db, "specialties", c.specialtyId));
-        if (spSnap.exists()) {
-          const sp = spSnap.data() as SpecialtyDoc;
-          setSpecialtyName(String(sp?.name ?? c.specialtyId));
-        } else {
-          setSpecialtyName(c.specialtyId);
-        }
-      } catch {
-        setSpecialtyName(c.specialtyId);
+  if (!specialtyId) {
+    setSpecialtyName("");
+    return;
+  }
+
+  (async () => {
+    try {
+      const spSnap = await getDoc(doc(db, "specialties", specialtyId));
+      if (spSnap.exists()) {
+        const sp = spSnap.data() as SpecialtyDoc;
+        setSpecialtyName(String(sp?.name ?? specialtyId));
+      } else {
+        setSpecialtyName(specialtyId);
       }
-    })();
-  }, [c?.specialtyId]);
+    } catch {
+      setSpecialtyName(specialtyId);
+    }
+  })();
+}, [c?.specialtyId]);
+
 
   const confirmedCount = uniq(c?.confirmedAssigneesUids ?? []).length;
 
