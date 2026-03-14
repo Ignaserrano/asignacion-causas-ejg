@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -25,7 +25,7 @@ type AssignmentMode = "auto" | "direct";
 type Specialty = { id: string; name: string; active: boolean };
 type UserRow = { uid: string; email: string; role: string };
 
-export default function NewCasePage() {
+function NewCasePageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -434,5 +434,21 @@ export default function NewCasePage() {
         </button>
       </form>
     </AppShell>
+  );
+}
+
+export default function NewCasePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-dvh bg-gray-50 p-4 dark:bg-gray-950">
+          <div className="mx-auto max-w-5xl rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+            Cargando...
+          </div>
+        </div>
+      }
+    >
+      <NewCasePageInner />
+    </Suspense>
   );
 }
