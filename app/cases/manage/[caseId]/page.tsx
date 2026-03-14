@@ -45,10 +45,13 @@ import {
 } from "@/lib/caseManagement";
 import { getChargeUserNetAmount } from "@/lib/charges";
 import { createAutoEventFromCaseLog } from "@/lib/events";
+import { generateCaseReport } from "@/lib/aiReports";
+
+
 
 type MainCaseStatus = "draft" | "assigned" | "archsolicited" | "archived";
 
-type InitialDraftWorkflow = {
+type RedactionWorkflow = {
   status?: "drafting" | "ready";
   responsibleUid?: string;
   responsibleEmail?: string;
@@ -66,12 +69,20 @@ type InitialDraftWorkflow = {
 
 type CaseDoc = {
   caratulaTentativa?: string;
-  jurisdiccion?: "nacional" | "federal" | "caba" | "provincia_bs_as";
+    jurisdiccion?:
+    | "nacional"
+    | "federal"
+    | "caba"
+    | "provincia_bs_as"
+    | "entre_rios"
+    | "etapa_administrativa"
+    | "otra";
   confirmedAssigneesUids?: string[];
   broughtByUid?: string;
   status?: MainCaseStatus;
   managementStatus?: CaseStatus;
-  initialDraftWorkflow?: InitialDraftWorkflow;
+    initialDraftWorkflow?: RedactionWorkflow;
+  alegatoWorkflow?: RedactionWorkflow;
 };
 
 type Party = {
@@ -105,6 +116,20 @@ type LogEntry = {
     resultado: "ganado" | "perdido" | "empatado";
     pdfUrl: string;
     pdfName: string;
+  };
+    interaction?: {
+    contactId?: string;
+    contactName?: string;
+    report?: string;
+  };
+  despachoImportante?: {
+    resumen?: string;
+    pdfUrl?: string;
+    pdfName?: string;
+  };
+  paseVista?: {
+    organism?: string;
+    reason?: string;
   };
 };
 
@@ -150,6 +175,7 @@ type QuickCaseRow = {
 type MetaDraft = Partial<ManagementMeta> & {
   caratulaTentativa?: string;
   claimAmount?: number | null;
+  otherOrganisms?: string[];
 };
 
 type CasePaidChargeRow = {
@@ -355,6 +381,25 @@ function normalizeUrl(url?: string | null) {
   return `https://${raw}`;
 }
 
+function normalizeOrganisms(values?: string[]) {
+  return Array.from(
+    new Set((values ?? []).map((x) => String(x ?? "").trim()).filter(Boolean))
+  );
+}
+
+function getAllOrganismsFromMeta(meta?: any) {
+  const multi = Array.isArray(meta?.otherOrganisms) ? meta.otherOrganisms : [];
+  const single = String(meta?.otherOrganism ?? "").trim();
+
+  return Array.from(
+    new Set(
+      [...multi, single]
+        .map((x: any) => String(x ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 function getContactFullName(c?: ContactDoc | null) {
   if (!c) return "";
   return (
@@ -385,8 +430,14 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
   preliminar: "Preliminar",
   iniciada: "Iniciada",
   en_prueba: "En prueba",
+  a_alegar: "A alegar",
   a_sentencia: "A sentencia",
+  con_sentencia_primera_instancia: "Con sentencia de primera instancia",
+  con_sentencia_segunda_instancia: "Con sentencia de segunda instancia",
+  con_sentencia_ulterior_instancia: "Con sentencia de ulterior instancia",
   en_apelacion: "En apelación",
+  recurso_extraordinario_local: "Recurso extraordinario local",
+  ref: "REF",
   en_ejecucion: "En ejecución",
 };
 
@@ -398,6 +449,9 @@ const LOGTYPE_LABEL: Record<LogType, string> = {
   reunion_parte: "Reunión con parte",
   sentencia: "Sentencia",
   recordatorio: "Recordatorio",
+  registro_interaccion: "Registro de interacción",
+  despacho_importante: "Despacho importante",
+  pase_vista: "Pase / vista",
 };
 
 function roleLabel(role: PartyRole) {
@@ -431,6 +485,12 @@ function jurisdiccionLabel(v?: string) {
       return "CABA";
     case "provincia_bs_as":
       return "Provincia Bs. As.";
+    case "entre_rios":
+      return "Entre Ríos";
+    case "etapa_administrativa":
+      return "Etapa administrativa";
+    case "otra":
+      return "Otra";
     default:
       return valueOrDash(v);
   }
@@ -468,6 +528,9 @@ function Modal({
   );
 }
 
+
+
+
 export default function ManageCasePage() {
   const params = useParams<{ caseId: string }>();
   const caseId = params.caseId;
@@ -497,7 +560,7 @@ export default function ManageCasePage() {
   const [assignedLawyerEmails, setAssignedLawyerEmails] = useState<string[]>([]);
 
   const [metaModalOpen, setMetaModalOpen] = useState(false);
-  const [metaDraft, setMetaDraft] = useState<MetaDraft>({
+    const [metaDraft, setMetaDraft] = useState<MetaDraft>({
     caratulaTentativa: "",
     physicalFolder: "",
     driveFolderUrl: "",
@@ -509,6 +572,7 @@ export default function ManageCasePage() {
     status: "preliminar",
     tribunalAlzada: "",
     otherOrganism: "",
+    otherOrganisms: [""],
     claimAmount: null,
     claimAmountDate: "",
   });
@@ -557,13 +621,72 @@ export default function ManageCasePage() {
   const [caseChargesModalOpen, setCaseChargesModalOpen] = useState(false);
   const [caseChargesLoading, setCaseChargesLoading] = useState(false);
   const [caseChargesRows, setCaseChargesRows] = useState<CasePaidChargeRow[]>([]);
-const [participantLawyers, setParticipantLawyers] = useState<LawyerOption[]>([]);
+const [aiReportOpen, setAiReportOpen] = useState(false);
+const [aiReportKind, setAiReportKind] = useState<"cliente" | "interno">("cliente");
+const [aiReportTone, setAiReportTone] = useState<"breve" | "detallado">("breve");
+const [aiReportText, setAiReportText] = useState("");
+const [aiReportLoading, setAiReportLoading] = useState(false);
+  const [participantLawyers, setParticipantLawyers] = useState<LawyerOption[]>([]);
 
 const [initialDraftMarked, setInitialDraftMarked] = useState(false);
 const [initialDraftResponsibleUid, setInitialDraftResponsibleUid] = useState("");
 const [initialDraftDueDate, setInitialDraftDueDate] = useState("");
 const [savingInitialDraftWorkflow, setSavingInitialDraftWorkflow] = useState(false);
-  
+const [alegatoMarked, setAlegatoMarked] = useState(false);
+const [alegatoResponsibleUid, setAlegatoResponsibleUid] = useState("");
+const [alegatoDueDate, setAlegatoDueDate] = useState("");
+const [savingAlegatoWorkflow, setSavingAlegatoWorkflow] = useState(false);
+
+const [interactionContactQuery, setInteractionContactQuery] = useState("");
+const [interactionContactResults, setInteractionContactResults] = useState<
+  Array<{ id: string } & ContactDoc>
+>([]);
+const [interactionSelectedContact, setInteractionSelectedContact] = useState<
+  ({ id: string } & ContactDoc) | null
+>(null);
+const [interactionReport, setInteractionReport] = useState("");
+
+const [despachoResumen, setDespachoResumen] = useState("");
+const [despachoPdf, setDespachoPdf] = useState<File | null>(null);
+
+
+
+
+
+
+// informativa
+const [informativaOfficeNameDraft, setInformativaOfficeNameDraft] = useState("");
+const [informativaOfficeAddressDraft, setInformativaOfficeAddressDraft] = useState("");
+const [informativaProcessingModeDraft, setInformativaProcessingModeDraft] = useState<
+  "deox" | "sistema_externo" | "email" | "papel"
+>("deox");
+const [informativaDueDateDraft, setInformativaDueDateDraft] = useState("");
+const [informativaReiterationModeDraft, setInformativaReiterationModeDraft] = useState<
+  "automatica" | "requiere_solicitud"
+>("automatica");
+
+// pericial
+const [expertNameDraft, setExpertNameDraft] = useState("");
+const [expertPointsDraft, setExpertPointsDraft] = useState("");
+
+// instrumental en poder de la contraria
+const [instrumentalRequiredDraft, setInstrumentalRequiredDraft] = useState("");
+const [instrumentalDueDateDraft, setInstrumentalDueDateDraft] = useState("");
+
+// confesional
+const [confesionalAbsolventeDraft, setConfesionalAbsolventeDraft] = useState("");
+const [confesionalDateTimeDraft, setConfesionalDateTimeDraft] = useState("");
+const [confesionalPliegoDraft, setConfesionalPliegoDraft] = useState("");
+
+// reconocimiento
+const [reconocimientoDocumentalDraft, setReconocimientoDocumentalDraft] = useState("");
+const [reconocimientoPersonaDraft, setReconocimientoPersonaDraft] = useState("");
+const [reconocimientoDateTimeDraft, setReconocimientoDateTimeDraft] = useState("");
+
+// otro
+const [otherProofBodyDraft, setOtherProofBodyDraft] = useState("");  
+
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -679,6 +802,8 @@ const [savingInitialDraftWorkflow, setSavingInitialDraftWorkflow] = useState(fal
     return () => unsub();
   }, [user, caseId]);
 
+
+
   useEffect(() => {
     if (!user) return;
     const q = query(logsColRef(caseId), orderBy("createdAt", "desc"));
@@ -699,6 +824,10 @@ const [savingInitialDraftWorkflow, setSavingInitialDraftWorkflow] = useState(fal
     const assignees = caseDoc?.confirmedAssigneesUids ?? [];
     return !!u && assignees.includes(u);
   }, [user, caseDoc, role]);
+
+ const availableOrganisms = useMemo(() => {
+  return getAllOrganismsFromMeta(meta);
+}, [meta]);
 
 useEffect(() => {
   if (!caseDoc) return;
@@ -898,7 +1027,13 @@ useEffect(() => {
       deptoJudicial: meta?.deptoJudicial ?? "",
       status: meta?.status ?? "preliminar",
       tribunalAlzada: String((meta as any)?.tribunalAlzada ?? ""),
-      otherOrganism: String((meta as any)?.otherOrganism ?? ""),
+            otherOrganism: "",
+otherOrganisms:
+  normalizeOrganisms((meta as any)?.otherOrganisms).length > 0
+    ? normalizeOrganisms((meta as any)?.otherOrganisms)
+    : String((meta as any)?.otherOrganism ?? "").trim()
+    ? [String((meta as any)?.otherOrganism ?? "").trim()]
+    : [""],
       claimAmount:
         typeof (meta as any)?.claimAmount === "number" ? (meta as any).claimAmount : null,
       claimAmountDate: String((meta as any)?.claimAmountDate ?? ""),
@@ -975,7 +1110,7 @@ useEffect(() => {
         updatedAt: serverTimestamp(),
       });
 
-      const prevEmails = allLawyers
+            const prevEmails = allLawyers
         .filter((l) => prevUids.includes(l.uid))
         .map((l) => l.email)
         .sort((a, b) => a.localeCompare(b, "es"));
@@ -1022,6 +1157,11 @@ useEffect(() => {
         ...(patch as any),
         updatedAt: serverTimestamp(),
       });
+
+            setMeta((prev) => ({
+        ...(prev ?? {}),
+        ...(patch as any),
+      }));
 
       const nextCaratula = String(
         casePatch?.caratulaTentativa ?? caseDoc?.caratulaTentativa ?? ""
@@ -1082,6 +1222,10 @@ useEffect(() => {
       nextCourt = "";
     }
 
+    const normalizedOtherOrganisms = normalizeOrganisms(
+      (metaDraft.otherOrganisms ?? []).map((x) => String(x ?? ""))
+    );
+
     await saveMeta(
       {
         physicalFolder: String(metaDraft.physicalFolder ?? ""),
@@ -1094,7 +1238,8 @@ useEffect(() => {
           nextJurisdiccion === "provincia_bs_as" ? String(metaDraft.deptoJudicial ?? "") : "",
         status: to,
         tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
-        otherOrganism: String(metaDraft.otherOrganism ?? ""),
+otherOrganism: normalizedOtherOrganisms[0] ?? "",
+otherOrganisms: normalizedOtherOrganisms,
         claimAmount:
           metaDraft.claimAmount == null
             ? null
@@ -1183,6 +1328,8 @@ useEffect(() => {
   function sanitizeFileName(name: string) {
     return name.replace(/[^\w.\-]+/g, "_");
   }
+
+  
 
   async function uploadSentenciaPdf(file: File) {
     if (!user) throw new Error("No auth");
@@ -1370,7 +1517,16 @@ async function createInitialDraftDeadlineEvent(params: {
       | null = null;
 
     try {
-      let sentenciaPayload: any = null;
+            let sentenciaPayload: any = null;
+      let interactionPayload: any = null;
+      let despachoPayload: any = null;
+      let uploadedDespachoFile:
+        | {
+            pdfUrl: string;
+            pdfName: string;
+            storagePath: string;
+          }
+        | null = null;
 
       if (logType === "sentencia") {
         uploadedSentenciaFile = await uploadSentenciaPdf(sentPdf!);
@@ -1395,6 +1551,38 @@ async function createInitialDraftDeadlineEvent(params: {
           pdfUrl: uploadedSentenciaFile.pdfUrl,
           pdfName: uploadedSentenciaFile.pdfName,
         });
+      }
+
+      if (logType === "registro_interaccion") {
+        interactionPayload = {
+          contactId: interactionSelectedContact?.id ?? "",
+          contactName: getContactFullName(interactionSelectedContact),
+          report: interactionReport.trim(),
+        };
+      }
+
+      if (logType === "despacho_importante" && despachoPdf) {
+        const safeName = sanitizeFileName(despachoPdf.name);
+        const path = `cases/${caseId}/despachos/${Date.now()}_${safeName}`;
+        const fileRef = ref(storage, path);
+
+        await uploadBytes(fileRef, despachoPdf, {
+          contentType: despachoPdf.type || "application/pdf",
+        });
+
+        const pdfUrl = await getDownloadURL(fileRef);
+
+        uploadedDespachoFile = {
+          pdfUrl,
+          pdfName: despachoPdf.name,
+          storagePath: path,
+        };
+
+        despachoPayload = {
+          resumen: despachoResumen.trim(),
+          pdfUrl,
+          pdfName: despachoPdf.name,
+        };
       }
 
       let calendarPayload: any = null;
@@ -1444,6 +1632,8 @@ async function createInitialDraftDeadlineEvent(params: {
         attachments: [],
         calendar: calendarPayload,
         sentencia: sentenciaPayload,
+                interaction: interactionPayload,
+        despachoImportante: despachoPayload,
       });
 
       if (wantsCalendar && calendarStartDate) {
@@ -1486,6 +1676,11 @@ async function createInitialDraftDeadlineEvent(params: {
       setSentResumen("");
       setSentResult("ganado");
       setLogType("informativa");
+            setInteractionContactQuery("");
+      setInteractionSelectedContact(null);
+      setInteractionReport("");
+      setDespachoResumen("");
+      setDespachoPdf(null);
     } catch (e: any) {
       if (uploadedSentenciaFile?.storagePath) {
         try {
@@ -1629,6 +1824,31 @@ async function createInitialDraftDeadlineEvent(params: {
     }
   }
 
+async function handleGenerateAiReport() {
+  try {
+    setAiReportLoading(true);
+    setAiReportText("");
+
+    const res = await generateCaseReport({
+      caseId,
+      kind: aiReportKind,
+      tone: aiReportTone,
+    });
+
+    const text = String(res.report ?? "").trim();
+    if (!text) {
+      throw new Error("La IA no devolvió contenido.");
+    }
+
+    setAiReportText(text);
+    setAiReportOpen(true);
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo generar el informe con IA.");
+  } finally {
+    setAiReportLoading(false);
+  }
+}
+
   const archiveStatusText = archiveRequestDone
     ? "Solicitud de archivo realizada"
     : "Solicitar archivo de la causa";
@@ -1708,6 +1928,29 @@ const currentManagementStatus = (meta?.status ??
   "preliminar") as CaseStatus;
 
 const initialDraftWorkflow = caseDoc?.initialDraftWorkflow;
+const alegatoWorkflow = caseDoc?.alegatoWorkflow;
+
+const isAlegatoInDrafting =
+  currentManagementStatus === "a_alegar" &&
+  alegatoWorkflow?.status === "drafting";
+
+const isAlegatoReady =
+  currentManagementStatus !== "a_sentencia" &&
+  alegatoWorkflow?.status === "ready";
+
+const canMarkAlegatoFirstDraftCompleted =
+  !!user &&
+  isAlegatoInDrafting &&
+  user.uid === alegatoWorkflow?.responsibleUid &&
+  !alegatoWorkflow?.firstDraftCompletedAt;
+
+const canMarkAlegatoReviewed =
+  !!user &&
+  isAlegatoInDrafting &&
+  !!alegatoWorkflow?.firstDraftCompletedAt &&
+  user.uid !== alegatoWorkflow?.responsibleUid &&
+  (caseDoc?.confirmedAssigneesUids ?? []).includes(user.uid) &&
+  !alegatoWorkflow?.reviewedAt;
 const isInitialDraftInDrafting =
   currentManagementStatus === "preliminar" &&
   initialDraftWorkflow?.status === "drafting";
@@ -1864,6 +2107,122 @@ async function markDraftReviewed() {
   }
 }
 
+async function saveAlegatoWorkflow() {
+  if (!user) return;
+  if (!canWrite) return alert("No tenés permisos de escritura en esta causa.");
+  if (currentManagementStatus !== "a_alegar") {
+    return alert("Este panel solo está disponible para causas en estado 'A alegar'.");
+  }
+  if (!alegatoMarked) {
+    return alert("Primero tildá 'Pasar alegato a redacción'.");
+  }
+  if (!alegatoResponsibleUid) {
+    return alert("Seleccioná un responsable.");
+  }
+  if (!alegatoDueDate) {
+    return alert("Ingresá una fecha límite.");
+  }
+
+  const responsible = participantLawyers.find((x) => x.uid === alegatoResponsibleUid);
+  if (!responsible) return alert("No encontré al abogado responsable seleccionado.");
+
+  const ok = window.confirm("¿Confirmás pasar el alegato a redacción?");
+  if (!ok) return;
+
+  setSavingAlegatoWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      alegatoWorkflow: {
+        status: "drafting",
+        responsibleUid: responsible.uid,
+        responsibleEmail: responsible.email,
+        dueDate: alegatoDueDate,
+        startedAt: serverTimestamp(),
+        startedByUid: user.uid,
+        startedByEmail: user.email ?? "",
+      },
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Alegato pasado a redacción",
+      body: `Responsable: ${responsible.email}\nFecha límite: ${alegatoDueDate}`,
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo guardar el flujo de alegato.");
+  } finally {
+    setSavingAlegatoWorkflow(false);
+  }
+}
+
+async function markAlegatoFirstDraftCompleted() {
+  if (!user || !canMarkAlegatoFirstDraftCompleted) return;
+
+  const ok = window.confirm("¿Confirmás marcar la primera redacción del alegato como terminada?");
+  if (!ok) return;
+
+  setSavingAlegatoWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      "alegatoWorkflow.firstDraftCompletedAt": serverTimestamp(),
+      "alegatoWorkflow.firstDraftCompletedByUid": user.uid,
+      "alegatoWorkflow.firstDraftCompletedByEmail": user.email ?? "",
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Primera redacción del alegato terminada",
+      body: "",
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo marcar la primera redacción del alegato.");
+  } finally {
+    setSavingAlegatoWorkflow(false);
+  }
+}
+
+async function markAlegatoReviewed() {
+  if (!user || !canMarkAlegatoReviewed) return;
+
+  const ok = window.confirm("¿Confirmás marcar el alegato como revisado por otro abogado?");
+  if (!ok) return;
+
+  setSavingAlegatoWorkflow(true);
+  try {
+    await updateDoc(doc(db, "cases", caseId), {
+      "alegatoWorkflow.status": "ready",
+      "alegatoWorkflow.reviewedAt": serverTimestamp(),
+      "alegatoWorkflow.reviewedByUid": user.uid,
+      "alegatoWorkflow.reviewedByEmail": user.email ?? "",
+    });
+
+    await addAutoLog({
+      caseId,
+      uid: user.uid,
+      email: user.email ?? "",
+      title: "Alegato redactado y revisado",
+      body: "El alegato quedó listo.",
+      type: "informativa",
+    });
+  } catch (e: any) {
+    alert(e?.message ?? "No se pudo marcar la revisión del alegato.");
+  } finally {
+    setSavingAlegatoWorkflow(false);
+  }
+}
+
+const proofControlItems = Array.isArray((meta as any)?.proofControl)
+  ? ((meta as any).proofControl as any[])
+  : [];
+
+
+
   return (
     <AppShell
       title="Gestionar causa"
@@ -1999,6 +2358,15 @@ async function markDraftReviewed() {
                 Ver cobros
               </button>
 
+<button
+  type="button"
+  onClick={handleGenerateAiReport}
+  disabled={aiReportLoading}
+  className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+>
+  {aiReportLoading ? "Generando..." : "Generar informe con IA"}
+</button>
+
               <Link
                 href={`/cobranzas/registrar?caseId=${caseId}`}
                 className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90"
@@ -2025,12 +2393,63 @@ async function markDraftReviewed() {
               Esta causa tiene archivo solicitado y está pendiente de resolución por el administrador.
             </div>
           ) : null}
+{[
+  "con_sentencia_primera_instancia",
+  "con_sentencia_segunda_instancia",
+  "con_sentencia_ulterior_instancia",
+].includes(currentManagementStatus) ? (
+  <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-100">
+    <label className="flex items-center gap-3">
+      <input
+        type="checkbox"
+        checked={false}
+        onChange={async () => {
+          if (!user) return;
+          if (!canWrite) return;
+
+          const ok = window.confirm(
+            "¿Confirmás que la sentencia adquirió firmeza? El estado procesal pasará a 'En ejecución'."
+          );
+          if (!ok) return;
+
+          try {
+            await updateDoc(managementMetaRef(caseId), {
+              status: "en_ejecucion",
+              sentenceFirm: true,
+              sentenceFirmMarkedAt: serverTimestamp(),
+              sentenceFirmMarkedByUid: user.uid,
+              sentenceFirmMarkedByEmail: user.email ?? "",
+              updatedAt: serverTimestamp(),
+            });
+
+            await updateDoc(doc(db, "cases", caseId), {
+              managementStatus: "en_ejecucion",
+            });
+
+            await addAutoLog({
+              caseId,
+              uid: user.uid,
+              email: user.email ?? "",
+              title: "Sentencia adquirió firmeza",
+              body: "La causa pasó automáticamente a etapa de ejecución.",
+              type: "informativa",
+            });
+          } catch (e: any) {
+            alert(e?.message ?? "No se pudo registrar la firmeza.");
+          }
+        }}
+        className="h-4 w-4"
+      />
+      <span className="font-black">Sentencia adquirió firmeza</span>
+    </label>
+  </div>
+) : null}
 
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-black text-gray-900 dark:text-gray-100">
-                  Datos de gestión
+                  Información de la causa
                 </div>
                 <button
                   type="button"
@@ -2092,9 +2511,9 @@ async function markDraftReviewed() {
                   <span>{valueOrDash((meta as any)?.tribunalAlzada)}</span>
                 </div>
                 <div>
-                  <span className="font-black">Otro Organismo interviniente:</span>{" "}
-                  <span>{valueOrDash((meta as any)?.otherOrganism)}</span>
-                </div>
+  <span className="font-black">Otros organismos intervinientes:</span>{" "}
+  <span>{availableOrganisms.length > 0 ? availableOrganisms.join(", ") : "-"}</span>
+</div>
                 <div>
                   <span className="font-black">Monto del juicio:</span>{" "}
                   <span>${fmtAmount((meta as any)?.claimAmount)}</span>
@@ -2404,15 +2823,15 @@ async function markDraftReviewed() {
               </label>
 
               <div className="flex flex-wrap gap-2 md:col-span-2">
-  <button
-    type="button"
-    onClick={saveInitialDraftWorkflow}
-    disabled={!canWrite || savingInitialDraftWorkflow}
-    className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
-  >
-    {savingInitialDraftWorkflow ? "Guardando..." : "Guardar"}
-  </button>
-</div>
+                <button
+                  type="button"
+                  onClick={saveInitialDraftWorkflow}
+                  disabled={!canWrite || savingInitialDraftWorkflow}
+                  className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {savingInitialDraftWorkflow ? "Guardando..." : "Guardar"}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -2465,12 +2884,136 @@ async function markDraftReviewed() {
               : ""}
           </span>
         </label>
-
-        
       </div>
     )}
   </div>
 ) : null}
+
+{currentManagementStatus === "a_alegar" ? (
+  <div className="mt-4 rounded-2xl border border-violet-200 bg-white p-4 shadow-sm dark:border-violet-900 dark:bg-gray-900">
+    <div className="flex items-center justify-between gap-2">
+      <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+        Redacción de alegato
+      </div>
+
+      {alegatoWorkflow?.status === "drafting" ? (
+        <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[11px] font-black text-violet-800 dark:border-violet-800 dark:bg-violet-900/20 dark:text-violet-200">
+          EN REDACCIÓN
+        </span>
+      ) : null}
+    </div>
+
+    {!alegatoWorkflow?.status ? (
+      <div className="mt-3 grid gap-3">
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100">
+          <input
+            type="checkbox"
+            checked={alegatoMarked}
+            onChange={() => {
+              if (!alegatoMarked) setAlegatoMarked(true);
+            }}
+            disabled={!canWrite || alegatoMarked}
+            className="h-4 w-4"
+          />
+          <span>Pasar alegato a redacción</span>
+        </label>
+
+        {alegatoMarked ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Responsable de redacción
+              </span>
+              <select
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={alegatoResponsibleUid}
+                onChange={(e) => setAlegatoResponsibleUid(e.target.value)}
+                disabled={!canWrite}
+              >
+                <option value="">Seleccionar…</option>
+                {participantLawyers.map((lawyer) => (
+                  <option key={lawyer.uid} value={lawyer.uid}>
+                    {lawyer.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-1">
+              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+                Fecha límite
+              </span>
+              <input
+                type="date"
+                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+                value={alegatoDueDate}
+                onChange={(e) => setAlegatoDueDate(e.target.value)}
+                disabled={!canWrite}
+              />
+            </label>
+
+            <div className="flex flex-wrap gap-2 md:col-span-2">
+              <button
+                type="button"
+                onClick={saveAlegatoWorkflow}
+                disabled={!canWrite || savingAlegatoWorkflow}
+                className="rounded-xl bg-violet-700 px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {savingAlegatoWorkflow ? "Guardando..." : "Guardar"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    ) : (
+      <div className="mt-3 grid gap-3">
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+          <div className="text-sm font-black text-gray-900 dark:text-gray-100">
+            Responsable: {alegatoWorkflow.responsibleEmail || "-"}
+          </div>
+          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+            Fecha límite: {alegatoWorkflow.dueDate || "-"}
+          </div>
+        </div>
+
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          <input
+            type="checkbox"
+            checked={!!alegatoWorkflow.firstDraftCompletedAt}
+            onChange={() => {
+              if (!alegatoWorkflow.firstDraftCompletedAt) {
+                void markAlegatoFirstDraftCompleted();
+              }
+            }}
+            disabled={!canMarkAlegatoFirstDraftCompleted || savingAlegatoWorkflow}
+            className="h-4 w-4"
+          />
+          <span>Primera redacción del alegato terminada</span>
+        </label>
+
+        <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+          <input
+            type="checkbox"
+            checked={!!alegatoWorkflow.reviewedAt}
+            onChange={() => {
+              if (!alegatoWorkflow.reviewedAt) {
+                void markAlegatoReviewed();
+              }
+            }}
+            disabled={!canMarkAlegatoReviewed || savingAlegatoWorkflow}
+            className="h-4 w-4"
+          />
+          <span>Revisión realizada por otro abogado</span>
+        </label>
+      </div>
+    )}
+  </div>
+) : null}
+
+
+
+
+            
 
           <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
                      
@@ -2531,6 +3074,64 @@ async function markDraftReviewed() {
                   placeholder={logType === "recordatorio" ? "Opcional" : undefined}
                 />
               </label>
+
+{logType === "registro_interaccion" ? (
+  <>
+    <label className="grid gap-1">
+      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+        Seleccionar con
+      </span>
+      <input
+        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        value={interactionContactQuery}
+        onChange={(e) => setInteractionContactQuery(e.target.value)}
+        disabled={!canWrite}
+        placeholder="Buscar contacto"
+      />
+    </label>
+
+    <label className="grid gap-1 md:col-span-2">
+      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+        Informe de interacción
+      </span>
+      <textarea
+        className="min-h-[90px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        value={interactionReport}
+        onChange={(e) => setInteractionReport(e.target.value)}
+        disabled={!canWrite}
+      />
+    </label>
+  </>
+) : null}
+
+{logType === "despacho_importante" ? (
+  <>
+    <label className="grid gap-1 md:col-span-2">
+      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+        Resumen (opcional)
+      </span>
+      <textarea
+        className="min-h-[90px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        value={despachoResumen}
+        onChange={(e) => setDespachoResumen(e.target.value)}
+        disabled={!canWrite}
+      />
+    </label>
+
+    <label className="grid gap-1 md:col-span-2">
+      <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+        Adjuntar PDF
+      </span>
+      <input
+        type="file"
+        accept="application/pdf"
+        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        onChange={(e) => setDespachoPdf(e.target.files?.[0] ?? null)}
+        disabled={!canWrite}
+      />
+    </label>
+  </>
+) : null}
 
               {["vencimiento", "control_cobro", "audiencia", "reunion_parte"].includes(logType) ? (
                 <>
@@ -2791,6 +3392,52 @@ async function markDraftReviewed() {
                         </div>
                       ) : null}
 
+
+{l.type === "registro_interaccion" && (l as any).interaction ? (
+  <div className="mt-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-950 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-100">
+    <div>
+      <span className="font-black">Con:</span>{" "}
+      {valueOrDash((l as any).interaction?.contactName)}
+    </div>
+    <div className="mt-1 whitespace-pre-wrap">
+      {(l as any).interaction?.report || "-"}
+    </div>
+  </div>
+) : null}
+
+{l.type === "despacho_importante" && (l as any).despachoImportante ? (
+  <div className="mt-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950 dark:border-violet-800 dark:bg-violet-900/20 dark:text-violet-100">
+    {(l as any).despachoImportante?.resumen ? (
+      <div className="whitespace-pre-wrap">{(l as any).despachoImportante.resumen}</div>
+    ) : null}
+    {(l as any).despachoImportante?.pdfUrl ? (
+      <div className="mt-2">
+        <a
+          className="font-extrabold underline"
+          href={(l as any).despachoImportante.pdfUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Ver PDF ({(l as any).despachoImportante.pdfName || "archivo"})
+        </a>
+      </div>
+    ) : null}
+  </div>
+) : null}
+
+{l.type === "pase_vista" && (l as any).paseVista ? (
+  <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+    <div>
+      <span className="font-black">Organismo:</span>{" "}
+      {valueOrDash((l as any).paseVista?.organism)}
+    </div>
+    <div className="mt-1">
+      <span className="font-black">Motivo:</span>{" "}
+      {valueOrDash((l as any).paseVista?.reason)}
+    </div>
+  </div>
+) : null}
+
                       {l.type === "sentencia" && l.sentencia ? (
                         <div className="mt-2 rounded-xl border border-fuchsia-200 bg-fuchsia-50 p-3 text-sm">
                           <div className="font-black">Sentencia</div>
@@ -2898,12 +3545,12 @@ async function markDraftReviewed() {
               )}
             </div>
           </div>
+       
         </>
       )}
-
       <Modal
         open={metaModalOpen}
-        title="Modificar datos de gestión"
+        title="Modificar información de la causa"
         onClose={() => setMetaModalOpen(false)}
       >
         <div className="grid gap-3">
@@ -2975,6 +3622,9 @@ async function markDraftReviewed() {
                 <option value="federal">Federal</option>
                 <option value="caba">CABA</option>
                 <option value="provincia_bs_as">Provincia Bs. As.</option>
+                <option value="entre_rios">Entre Ríos</option>
+<option value="etapa_administrativa">Etapa administrativa</option>
+<option value="otra">Otra</option>
               </select>
             </label>
           </div>
@@ -3081,17 +3731,62 @@ async function markDraftReviewed() {
               />
             </label>
 
-            <label className="grid gap-1">
-              <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
-                Otro Organismo interviniente
-              </span>
-              <input
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
-                value={String(metaDraft.otherOrganism ?? "")}
-                onChange={(e) => setMetaDraft((m) => ({ ...m, otherOrganism: e.target.value }))}
-              />
-            </label>
-          </div>
+<div className="grid gap-2">
+  <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+    Otros organismos intervinientes
+  </span>
+
+  {(metaDraft.otherOrganisms ?? [""]).map((org, idx) => (
+    <div key={idx} className="flex gap-2">
+      <input
+        className="flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        value={String(org ?? "")}
+        onChange={(e) =>
+          setMetaDraft((m) => {
+            const next = [...(m.otherOrganisms ?? [""])];
+            next[idx] = e.target.value;
+            return { ...m, otherOrganisms: next };
+          })
+        }
+        placeholder="Otro organismo interviniente"
+      />
+
+      {(metaDraft.otherOrganisms ?? []).length > 1 ? (
+        <button
+          type="button"
+          onClick={() =>
+            setMetaDraft((m) => {
+              const next = [...(m.otherOrganisms ?? [""])];
+              next.splice(idx, 1);
+              return {
+                ...m,
+                otherOrganisms: next.length > 0 ? next : [""],
+              };
+            })
+          }
+          className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-extrabold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+        >
+          Quitar
+        </button>
+      ) : null}
+    </div>
+  ))}
+
+  <div>
+    <button
+      type="button"
+      onClick={() =>
+        setMetaDraft((m) => ({
+          ...m,
+          otherOrganisms: [...(m.otherOrganisms ?? [""]), ""],
+        }))
+      }
+      className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-extrabold text-gray-800 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+    >
+      Agregar más organismos
+    </button>
+  </div>
+</div>          </div>
 
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-1">
@@ -3386,6 +4081,126 @@ async function markDraftReviewed() {
           </div>
         )}
       </Modal>
+<Modal
+  open={aiReportOpen}
+  title="Informe generado con IA"
+  onClose={() => setAiReportOpen(false)}
+>
+  <div className="grid gap-4">
+    <div className="grid gap-3 md:grid-cols-2">
+      <label className="grid gap-1">
+        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+          Tipo de informe
+        </span>
+        <select
+          value={aiReportKind}
+          onChange={(e) => setAiReportKind(e.target.value as "cliente" | "interno")}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        >
+          <option value="cliente">Para cliente</option>
+          <option value="interno">Interno del estudio</option>
+        </select>
+      </label>
+
+      <label className="grid gap-1">
+        <span className="text-xs font-extrabold text-gray-700 dark:text-gray-200">
+          Extensión
+        </span>
+        <select
+          value={aiReportTone}
+          onChange={(e) => setAiReportTone(e.target.value as "breve" | "detallado")}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+        >
+          <option value="breve">Breve</option>
+          <option value="detallado">Detallado</option>
+        </select>
+      </label>
+    </div>
+
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+      Borrador generado con asistencia de IA. Revisalo antes de entregarlo al cliente o usarlo internamente en el estudio.
+    </div>
+
+    <textarea
+      value={aiReportText}
+      onChange={(e) => setAiReportText(e.target.value)}
+      className="min-h-[420px] w-full rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm font-medium text-gray-900 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-100"
+      placeholder="El informe generado aparecerá acá."
+    />
+
+    <div className="flex flex-wrap gap-2">
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(aiReportText);
+            alert("Informe copiado al portapapeles.");
+          } catch {
+            alert("No se pudo copiar el informe.");
+          }
+        }}
+        disabled={!aiReportText.trim()}
+        className="rounded-xl bg-black px-3 py-2 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"
+      >
+        Copiar
+      </button>
+
+      <button
+        type="button"
+        onClick={handleGenerateAiReport}
+        disabled={aiReportLoading}
+        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+      >
+        {aiReportLoading ? "Regenerando..." : "Regenerar"}
+      </button>
+
+      <button
+        type="button"
+        onClick={async () => {
+          if (!user) return;
+          if (!aiReportText.trim()) return alert("No hay informe para guardar.");
+
+          const title =
+            aiReportKind === "cliente"
+              ? "Informe para cliente generado con IA"
+              : "Informe interno generado con IA";
+
+          try {
+            await addAutoLog({
+              caseId,
+              uid: user.uid,
+              email: user.email ?? "",
+              title,
+              body: aiReportText,
+              type: "informativa",
+            });
+
+            await updateDoc(managementMetaRef(caseId), {
+              updatedAt: serverTimestamp(),
+              lastLogAt: serverTimestamp(),
+              lastLogByUid: user.uid,
+              lastLogTitle: title,
+            });
+
+            await updateDoc(doc(db, "cases", caseId), {
+              dashboardLastLogAt: serverTimestamp(),
+              dashboardLastLogTitle: title,
+              dashboardLastLogByEmail: user.email ?? "",
+            });
+
+            alert("Informe guardado en la bitácora.");
+          } catch (e: any) {
+            alert(e?.message ?? "No se pudo guardar el informe en la bitácora.");
+          }
+        }}
+        disabled={!aiReportText.trim()}
+        className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-extrabold text-gray-800 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+      >
+        Guardar en bitácora
+      </button>
+    </div>
+  </div>
+</Modal>
 
       <ScrollToTopButton />
     </AppShell>

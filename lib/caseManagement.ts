@@ -13,12 +13,27 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
+export type Jurisdiccion =
+  | "nacional"
+  | "federal"
+  | "caba"
+  | "provincia_bs_as"
+  | "entre_rios"
+  | "etapa_administrativa"
+  | "otra";
+
 export type CaseStatus =
   | "preliminar"
   | "iniciada"
   | "en_prueba"
+  | "a_alegar"
   | "a_sentencia"
+  | "con_sentencia_primera_instancia"
+  | "con_sentencia_segunda_instancia"
+  | "con_sentencia_ulterior_instancia"
   | "en_apelacion"
+  | "recurso_extraordinario_local"
+  | "ref"
   | "en_ejecucion";
 
 export type LogType =
@@ -28,7 +43,10 @@ export type LogType =
   | "control_cobro"
   | "reunion_parte"
   | "sentencia"
-  | "recordatorio";
+  | "recordatorio"
+  | "registro_interaccion"
+  | "despacho_importante"
+  | "pase_vista";
 
 export type PartyRole =
   | "actor"
@@ -40,20 +58,237 @@ export type PartyRole =
   | "fallido"
   | "otro";
 
+export type WitnessCitationMode =
+  | "presencial"
+  | "virtual";
+
+export type WitnessLawyerCitationMode =
+  | "presencial"
+  | "virtual";
+
+export type WitnessNotificationMode =
+  | "cedula_a_cargo_de_la_parte"
+  | "mail_a_cargo_de_la_parte"
+  | "mail_a_cargo_del_juzgado"
+  | "nota_con_firma_personal"
+  | "cedula_a_cargo_del_juzgado"
+  | "otro";
+
+export type ProofKind =
+  | "informativa"
+  | "testimonial"
+  | "pericial_medica"
+  | "pericial_caligrafica"
+  | "pericial_contable"
+  | "pericial_informatica"
+  | "reconocimiento"
+  | "confesional"
+  | "instrumental_en_poder_de_la_contraria"
+  | "otro";
+
+export type InformativaProcessingMode =
+  | "deox"
+  | "sistema_externo"
+  | "email"
+  | "papel";
+
+export type InformativaReiterationMode =
+  | "automatica"
+  | "requiere_solicitud";
+
+export type WitnessEntry = {
+  id: string;
+
+  contactId?: string | null;
+  displayName: string;
+
+  offeredBySide?: "nosotros" | "contraria";
+  offeredByPartyId?: string | null;
+  offeredByPartyName?: string;
+
+  citationDateTime?: string;
+  witnessCitationMode?: WitnessCitationMode;
+  lawyerCitationMode?: WitnessLawyerCitationMode;
+  connectionLink?: string;
+
+  notificationMode?: WitnessNotificationMode;
+  notificationModeOther?: string;
+
+  notified?: boolean;
+  desisted?: boolean;
+  declared?: boolean;
+  impugned?: boolean;
+
+  notes?: string;
+
+  reCitationOfWitnessId?: string | null;
+  reCitationOfWitnessName?: string;
+
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type InformativaOfficeEntry = {
+  id: string;
+  name: string;
+  address?: string;
+  processingMode?: InformativaProcessingMode;
+  dueDate?: string;
+  reiterationMode?: InformativaReiterationMode;
+  diligenciado?: boolean;
+  acreditadoDiligenciamiento?: boolean;
+  solicitadoReiteratorio?: boolean;
+  diligenciadoReiteratorio?: boolean;
+  reiteratorioDueDate?: string;
+  contestado?: boolean;
+  ampliatorioSolicitado?: boolean;
+  ampliatorioContestado?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type ExpertEntry = {
+  id: string;
+  expertName?: string;
+  priorExpertNames?: string[];
+  pointsByParty?: Array<{
+    partyId?: string | null;
+    partyName?: string;
+    points?: string;
+  }>;
+  peritoRemovido?: boolean;
+  desistida?: boolean;
+  noSeRealizoPorCulpaDePartyId?: string | null;
+  noSeRealizoPorCulpaDePartyName?: string;
+  presentaInforme?: boolean;
+  impugnadoPorPartyIds?: string[];
+  impugnadoPorPartyNames?: string[];
+  peritoContestaImpugnacion?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type InstrumentalContrariaEntry = {
+  id: string;
+  instrumentalRequerida: string;
+  dueDate?: string;
+  cumplioIntimacion?: boolean;
+  noCumplioIntimacion?: boolean;
+  solicitoPresuncion?: boolean;
+  juezAplicaPresuncion?: boolean;
+  juezOtorgaPlazoMayor?: boolean;
+  nuevoVencimiento?: string;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type ConfesionalEntry = {
+  id: string;
+  absolventeName: string;
+  audienciaNotificada?: boolean;
+  pliegoPosiciones?: string;
+  desistida?: boolean;
+  audienciaDateTime?: string;
+  realizada?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type ReconocimientoEntry = {
+  id: string;
+  documentalAReconocer: string;
+  personaCitadaAReconocer: string;
+  depositadaEnJuzgado?: boolean;
+  llevaAAudiencia?: boolean;
+  audienciaDateTime?: string;
+  desistida?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type OtherProofEntry = {
+  id: string;
+  title: string;
+  body?: string;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type ProofControlItem = {
+  id: string;
+  kind: ProofKind;
+  title?: string;
+  notes?: string;
+  summary?: string;
+
+  witnesses?: WitnessEntry[];
+  informativaOffices?: InformativaOfficeEntry[];
+  experts?: ExpertEntry[];
+  instrumentalContrariaItems?: InstrumentalContrariaEntry[];
+  confesionales?: ConfesionalEntry[];
+  reconocimientos?: ReconocimientoEntry[];
+  others?: OtherProofEntry[];
+
+  createdAt?: any;
+  updatedAt?: any;
+};
+
+export type PaseVistaEntry = {
+  organism: string;
+  reason?: string;
+  createdAt?: any;
+  createdByUid?: string;
+  createdByEmail?: string;
+};
+
+export type RedactionWorkflow = {
+  status?: "drafting" | "ready";
+  responsibleUid?: string;
+  responsibleEmail?: string;
+  dueDate?: string;
+  startedAt?: any;
+  startedByUid?: string;
+  startedByEmail?: string;
+  firstDraftCompletedAt?: any;
+  firstDraftCompletedByUid?: string;
+  firstDraftCompletedByEmail?: string;
+  reviewedAt?: any;
+  reviewedByUid?: string;
+  reviewedByEmail?: string;
+};
+
 export type ManagementMeta = {
   physicalFolder?: string;
   driveFolderUrl?: string;
   expedienteNumber?: string;
   court?: string;
   fuero?: string;
-  jurisdiccion?: "nacional" | "federal" | "caba" | "provincia_bs_as";
+  jurisdiccion?: Jurisdiccion;
   deptoJudicial?: string;
   status?: CaseStatus;
 
   tribunalAlzada?: string;
+
+  // Compatibilidad con el esquema viejo
   otherOrganism?: string;
+
+  // Nuevo esquema
+  otherOrganisms?: string[];
+
   claimAmount?: number | null;
   claimAmountDate?: string;
+
+  sentenceFirm?: boolean;
+  sentenceFirmMarkedAt?: any;
+  sentenceFirmMarkedByUid?: string;
+  sentenceFirmMarkedByEmail?: string;
+
+  lastPaseVista?: PaseVistaEntry | null;
+  pasesYVistas?: PaseVistaEntry[];
+
+  proofControl?: ProofControlItem[];
+
+  alegatoWorkflow?: RedactionWorkflow;
 
   archiveRequest?: {
     requestedAt?: any;
@@ -114,6 +349,10 @@ export async function ensureManagementInitialized(params: {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         status: "preliminar",
+        otherOrganisms: [],
+        pasesYVistas: [],
+        proofControl: [],
+        sentenceFirm: false,
         lastLogAt: serverTimestamp(),
         lastLogByUid: uid,
         lastLogTitle: "Inicio de bitácora",
@@ -141,8 +380,9 @@ export async function addAutoLog(params: {
   title: string;
   body?: string;
   type?: LogType;
+  extra?: Record<string, any>;
 }) {
-  const { caseId, uid, email, title, body, type } = params;
+  const { caseId, uid, email, title, body, type, extra } = params;
 
   const metaRef = managementMetaRef(caseId);
   const metaSnap = await getDoc(metaRef);
@@ -154,6 +394,10 @@ export async function addAutoLog(params: {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         status: "preliminar",
+        otherOrganisms: [],
+        pasesYVistas: [],
+        proofControl: [],
+        sentenceFirm: false,
         lastLogAt: serverTimestamp(),
         lastLogByUid: uid,
         lastLogTitle: title,
@@ -171,6 +415,7 @@ export async function addAutoLog(params: {
     createdByEmail: email ?? "",
     hasAttachments: false,
     attachments: [],
+    ...(extra ?? {}),
   });
 
   await setDoc(
@@ -291,6 +536,12 @@ export function logTypeColor(type: LogType) {
       return "bg-fuchsia-100 text-fuchsia-900 border-fuchsia-200";
     case "recordatorio":
       return "bg-teal-100 text-teal-900 border-teal-200";
+    case "registro_interaccion":
+      return "bg-indigo-100 text-indigo-900 border-indigo-200";
+    case "despacho_importante":
+      return "bg-violet-100 text-violet-900 border-violet-200";
+    case "pase_vista":
+      return "bg-amber-100 text-amber-900 border-amber-200";
     default:
       return "bg-gray-100 text-gray-900 border-gray-200";
   }

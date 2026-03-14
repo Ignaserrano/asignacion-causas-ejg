@@ -6,6 +6,7 @@ import ExcelJS from "exceljs";
 
 const SENDGRID_API_KEY = defineSecret("SENDGRID_API_KEY");
 const MAIL_FROM = defineSecret("MAIL_FROM");
+const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 
 admin.initializeApp();
 
@@ -270,27 +271,27 @@ export const createCaseWithInvites = onCall(
 
       invitedEmails = inviteUids.map((u) => emailByUid.get(u) ?? "").filter(Boolean);
 
-  tx.set(caseRef, {
-  caratulaTentativa,
-  specialtyId,
-  objeto,
-  resumen,
-  jurisdiccion,
-  broughtByUid: creatorUid,
-  broughtByParticipates,
-  assignmentMode,
-  directAssigneesUids,
-  directJustification,
-  requiredAssigneesCount,
-  confirmedAssigneesUids,
-  status: "draft",
-  directAssignmentNeedsReview: false,
-  manualReplacementNeeded: false,
-  manualReplacementReason: "",
-  fallbackReplacementMode: false,
-  createdAt: now,
-  updatedAt: now,
-});
+      tx.set(caseRef, {
+        caratulaTentativa,
+        specialtyId,
+        objeto,
+        resumen,
+        jurisdiccion,
+        broughtByUid: creatorUid,
+        broughtByParticipates,
+        assignmentMode,
+        directAssigneesUids,
+        directJustification,
+        requiredAssigneesCount,
+        confirmedAssigneesUids,
+        status: "draft",
+        directAssignmentNeedsReview: false,
+        manualReplacementNeeded: false,
+        manualReplacementReason: "",
+        fallbackReplacementMode: false,
+        createdAt: now,
+        updatedAt: now,
+      });
 
       for (const invitedUid of inviteUids) {
         const invitedEmail = emailByUid.get(invitedUid) ?? "";
@@ -976,6 +977,262 @@ export const finalizeDirectAssignment = onCall(async (request) => {
 
   return { ok: true };
 });
+
+/* =========================================================
+   IA: GENERAR INFORME DE CAUSA
+   ========================================================= */
+
+export const generateCaseReport = onCall(
+  { secrets: [GEMINI_API_KEY] },
+  async (request) => {
+    const auth = request.auth;
+
+    if (!auth) {
+      throw new HttpsError("unauthenticated", "Debés iniciar sesión.");
+    }
+
+    const { caseId, kind, tone } = request.data as {
+      caseId: string;
+      kind?: "cliente" | "interno";
+      tone?: "breve" | "detallado";
+    };
+
+    if (!caseId) {
+      throw new HttpsError("invalid-argument", "Falta caseId.");
+    }
+
+    const reportKind = kind === "interno" ? "interno" : "cliente";
+    const reportTone = tone === "detallado" ? "detallado" : "breve";
+
+    const db = admin.firestore();
+
+    const caseRef = db.collection("cases").doc(caseId);
+    const caseSnap = await caseRef.get();
+
+    if (!caseSnap.exists) {
+      throw new HttpsError("not-found", "La causa no existe.");
+    }
+
+    const caseData = caseSnap.data() || {};
+
+    const userSnap = await db.collection("users").doc(auth.uid).get();
+    const userData = userSnap.exists ? userSnap.data() || {} : {};
+
+    const role = String((userData as any).role || "");
+    const assignees = Array.isArray((caseData as any).confirmedAssigneesUids)
+      ? ((caseData as any).confirmedAssigneesUids as string[])
+      : [];
+
+    const canAccess = role === "admin" || assignees.includes(auth.uid);
+
+    if (!canAccess) {
+      throw new HttpsError("permission-denied", "No tenés acceso a esta causa.");
+    }
+
+    const metaSnap = await caseRef.collection("management").doc("meta").get();
+    const meta = metaSnap.exists ? metaSnap.data() || {} : {};
+
+    const partiesSnap = await caseRef.collection("parties").get();
+    const parties = partiesSnap.docs.map((d) => {
+      const x = d.data() || {};
+      return {
+        role: String((x as any).role || ""),
+        name: String((x as any).name || ""),
+      };
+    });
+
+    const logsSnap = await caseRef
+      .collection("logs")
+      .orderBy("createdAt", "desc")
+      .limit(20)
+      .get();
+
+    const logs = logsSnap.docs
+      .map((d) => {
+        const x = d.data() || {};
+        const createdAt =
+          (x as any).createdAt && typeof (x as any).createdAt.toDate === "function"
+            ? (x as any).createdAt.toDate().toISOString()
+            : null;
+
+        return {
+          type: String((x as any).type || ""),
+          title: String((x as any).title || ""),
+          body: String((x as any).body || ""),
+          createdAt,
+          createdByEmail: String((x as any).createdByEmail || ""),
+        };
+      })
+      .reverse();
+
+    const safePayload = {
+      caratula: String((caseData as any).caratulaTentativa || ""),
+      status: String((meta as any).status || ""),
+      court: String((meta as any).court || ""),
+      fuero: String((meta as any).fuero || ""),
+      jurisdiccion: String((meta as any).jurisdiccion || ""),
+      deptoJudicial: String((meta as any).deptoJudicial || ""),
+      expedienteNumber: String((meta as any).expedienteNumber || ""),
+      claimAmount:
+        typeof (meta as any).claimAmount === "number" ? (meta as any).claimAmount : null,
+      claimAmountDate: String((meta as any).claimAmountDate || ""),
+      tribunalAlzada: String((meta as any).tribunalAlzada || ""),
+      otherOrganism: String((meta as any).otherOrganism || ""),
+      parties,
+      logs,
+    };
+
+    const systemPrompt =
+      reportKind === "cliente"
+        ? `
+Sos un abogado en Argentina.
+
+Redactá un informe claro, ordenado y profesional para cliente.
+
+Reglas obligatorias:
+
+- usar lenguaje sencillo
+- no inventar hechos
+- no citar normas ni jurisprudencia salvo que surjan expresamente de los datos
+- si falta información, decirlo expresamente
+- si la bitácora es escasa, aclararlo
+
+El informe debe incluir estas secciones, en este orden:
+
+1. Carátula y datos básicos
+2. Estado actual de la causa
+3. Resumen de bitácora
+4. Situación actual explicada en términos simples
+5. Próximos pasos sugeridos
+
+En "Resumen de bitácora":
+- resumir cronológicamente las actuaciones o movimientos relevantes
+- no copiar textualmente la bitácora salvo que sea necesario
+- sintetizar con claridad y prudencia
+- mencionar solo lo verdaderamente relevante
+
+Si la extensión solicitada es "breve":
+- hacer párrafos concisos
+- no extenderse innecesariamente
+
+Si la extensión solicitada es "detallado":
+- desarrollar mejor la evolución de la causa
+- ampliar el resumen de bitácora
+
+Terminar exactamente con esta leyenda:
+
+"Borrador generado con asistencia de IA. Requiere revisión profesional antes de su entrega."
+`
+        : `
+Sos un abogado en Argentina.
+
+Redactá un informe interno para estudio jurídico, claro y técnico.
+
+Reglas obligatorias:
+
+- no inventar hechos
+- si falta información, decirlo expresamente
+- resumir con criterio profesional
+- si la bitácora es escasa, aclararlo
+
+El informe debe incluir estas secciones, en este orden:
+
+1. Identificación de la causa
+2. Estado procesal actual
+3. Resumen de bitácora
+4. Evaluación interna breve
+5. Próximos pasos / tareas sugeridas
+
+En "Resumen de bitácora":
+- resumir cronológicamente los movimientos registrados
+- destacar actuaciones relevantes
+- evitar repetir innecesariamente textos completos
+- mantener precisión sobre lo que surge de los registros
+
+Si la extensión solicitada es "breve":
+- ser sintético y directo
+
+Si la extensión solicitada es "detallado":
+- ampliar la secuencia de movimientos y su relevancia
+
+Terminar exactamente con esta leyenda:
+
+"Borrador generado con asistencia de IA. Requiere revisión profesional."
+`;
+
+    const userPrompt = `
+Tipo de informe: ${reportKind}
+Extensión: ${reportTone}
+
+Datos de la causa:
+
+${JSON.stringify(safePayload, null, 2)}
+
+Instrucciones adicionales:
+
+- La sección "Resumen de bitácora" debe construirse principalmente a partir del arreglo "logs".
+- Los logs ya fueron ordenados cronológicamente del más antiguo al más reciente.
+- Si hay varios registros, resumir la evolución de la causa en secuencia temporal.
+- Si solo hay pocos registros o son insuficientes, decirlo expresamente.
+- Si el tono es "breve", hacer un resumen sintético.
+- Si el tono es "detallado", desarrollar mejor la evolución de la bitácora.
+- No copiar simplemente el JSON.
+- Redactar el informe final en español de Argentina.
+`;
+
+    const apiKey = GEMINI_API_KEY.value();
+
+    if (!apiKey) {
+      throw new HttpsError("failed-precondition", "Falta GEMINI_API_KEY.");
+    }
+
+    const model = "gemini-2.5-flash";
+    const url =
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userPrompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new HttpsError("internal", err);
+    }
+
+    const data = await response.json();
+
+    const report =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p: any) => String(p?.text ?? ""))
+        .join("\n")
+        .trim() || "";
+
+    if (!report) {
+      throw new HttpsError("internal", "La IA no devolvió contenido para el informe.");
+    }
+
+    return {
+      report,
+    };
+  }
+);
 
 /* =========================================================
    ADMIN: LAWYERS MANAGEMENT
