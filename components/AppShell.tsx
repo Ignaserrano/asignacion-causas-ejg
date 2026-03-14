@@ -235,6 +235,20 @@ function IconUsers({ className }: { className?: string }) {
   );
 }
 
+function IconChat({ className }: { className?: string }) {
+  return (
+    <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M7 18l-3 2V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M8 9h8M8 13h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconMenu({ className }: { className?: string }) {
   return (
     <svg className={className ?? "h-5 w-5"} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -327,6 +341,7 @@ export default function AppShell({
   userEmail,
   role,
   pendingInvites,
+  pendingConsultationDerivations,
   onLogout,
   breadcrumbs,
   children,
@@ -336,6 +351,7 @@ export default function AppShell({
   userEmail?: string | null;
   role?: string;
   pendingInvites?: number;
+  pendingConsultationDerivations?: number;
   onLogout?: () => void;
   breadcrumbs?: BreadcrumbItem[];
   children: React.ReactNode;
@@ -345,6 +361,7 @@ export default function AppShell({
 
   const isAdmin = role === "admin";
   const invitesCount = pendingInvites ?? 0;
+  const consultationPendingCount = pendingConsultationDerivations ?? 0;
 
   useEffect(() => {
     setMenuOpen(false);
@@ -356,6 +373,7 @@ export default function AppShell({
       { href: "/cases/new", label: "Nueva causa", icon: <IconPlusDoc className="h-4 w-4" /> },
       { href: "/cases/mine", label: "Mis causas", icon: <IconBriefcase className="h-4 w-4" /> },
       { href: "/cases/manage", label: "Gestión de causas", icon: <IconManage className="h-4 w-4" /> },
+      { href: "/consultas", label: "Gestión de consultas", icon: <IconChat className="h-4 w-4" />, badge: consultationPendingCount > 0 ? <Badge tone="warn">{consultationPendingCount}</Badge> : undefined },
       { href: "/jurisprudencia", label: "Jurisprudencia", icon: <IconBook className="h-4 w-4" /> },
       { href: "/contacts", label: "Agenda de contactos", icon: <IconContacts className="h-4 w-4" /> },
       {
@@ -368,7 +386,7 @@ export default function AppShell({
       { href: "/calendar", label: "Agenda", icon: <IconCalendar className="h-4 w-4" /> },
       { href: "/cobranzas", label: "Cobros", icon: <IconMoney className="h-4 w-4" /> },
     ],
-    [invitesCount]
+    [invitesCount, consultationPendingCount]
   );
 
   const adminTabs: Tab[] = useMemo(

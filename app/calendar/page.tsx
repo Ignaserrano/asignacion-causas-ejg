@@ -142,7 +142,7 @@ function endOfWeek(d: Date) {
 
 function startOfWeekSunday(d: Date) {
   const copy = startOfDay(d);
-  const day = copy.getDay(); // 0 = domingo
+  const day = copy.getDay();
   copy.setDate(copy.getDate() - day);
   return copy;
 }
@@ -249,9 +249,38 @@ function isRescheduledEvent(row: CalendarEventRow) {
   return Boolean((row as any).rescheduled);
 }
 
+function isDoneEvent(row: CalendarEventRow) {
+  const status = safeLower((row as any).status || "active");
+  return (
+    status === "completed" ||
+    Boolean((row as any).done) ||
+    Boolean((row as any).completedAt)
+  );
+}
+
 function isReminderEvent(row: CalendarEventRow) {
   const autoType = safeText((row as any).autoType);
   return autoType === "manual_recordatorio" || autoType === "case_log_recordatorio";
+}
+
+function isDeadlineEvent(row: CalendarEventRow) {
+  const autoType = safeLower((row as any).autoType);
+  const title = safeLower(row.title);
+  return (
+    autoType.includes("vencim") ||
+    autoType.includes("deadline") ||
+    autoType === "case_log_vencimiento" ||
+    title.includes("vencimiento")
+  );
+}
+
+function isCompletableEvent(row: CalendarEventRow) {
+  return isReminderEvent(row) || isDeadlineEvent(row);
+}
+
+function shouldHideFromUpcoming(row: CalendarEventRow) {
+  const status = safeLower((row as any).status || "active");
+  return status === "cancelled" || isRescheduledEvent(row) || isDoneEvent(row);
 }
 
 function visibilityLabel(
@@ -346,7 +375,8 @@ function EventPill({
 }) {
   const rescheduled = isRescheduledEvent(row);
   const reminder = isReminderEvent(row);
-  const pillColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+  const done = isDoneEvent(row);
+  const pillColor = rescheduled || done ? "#9ca3af" : row.color || "#3b82f6";
 
   return (
     <button
@@ -368,6 +398,18 @@ function EventPill({
         {reminder ? (
           <span className="shrink-0 rounded bg-teal-100 px-1 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
             Recordatorio
+          </span>
+        ) : null}
+
+        {isDeadlineEvent(row) ? (
+          <span className="shrink-0 rounded bg-red-100 px-1 py-0.5 text-[10px] font-black uppercase text-red-800 dark:bg-red-900/30 dark:text-red-100">
+            Vencimiento
+          </span>
+        ) : null}
+
+        {done ? (
+          <span className="shrink-0 rounded bg-gray-200 px-1 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+            Hecho
           </span>
         ) : null}
 
@@ -420,6 +462,8 @@ export default function CalendarPage() {
   const [reprogramStartAtInput, setReprogramStartAtInput] = useState("");
   const [reprogramEndAtInput, setReprogramEndAtInput] = useState("");
   const [reprogramSaving, setReprogramSaving] = useState(false);
+
+  const [markDoneSaving, setMarkDoneSaving] = useState(false);
 
   const [quickEventSearch, setQuickEventSearch] = useState("");
   const [quickEventSearchFocused, setQuickEventSearchFocused] = useState(false);
@@ -507,11 +551,7 @@ export default function CalendarPage() {
 
     return visibleRows.filter((row) => {
       const start = row.startAt?.toDate ? row.startAt.toDate() : new Date(row.startAt);
-      return (
-        !Number.isNaN(start.getTime()) &&
-        start.getTime() >= now &&
-        safeText((row as any).status || "active") !== "cancelled"
-      );
+      return !Number.isNaN(start.getTime()) && start.getTime() >= now && !shouldHideFromUpcoming(row);
     });
   }, [visibleRows]);
 
@@ -781,6 +821,64 @@ export default function CalendarPage() {
     if (e.key === "Escape") {
       e.preventDefault();
       setQuickEventSearchFocused(false);
+    }
+  }
+
+  async function markEventAsDone() {
+    if (!user || !selectedEvent) return;
+
+    if (!isCompletableEvent(selectedEvent)) {
+      alert("Solo se pueden marcar como hechos los recordatorios y vencimientos.");
+      return;
+    }
+
+    if (isDoneEvent(selectedEvent)) {
+      alert("Este evento ya fue marcado como hecho.");
+      return;
+    }
+
+    if (isRescheduledEvent(selectedEvent)) {
+      alert("Un evento reprogramado no puede marcarse como hecho.");
+      return;
+    }
+
+    setMarkDoneSaving(true);
+    setMsg(null);
+
+    try {
+      await updateDoc(doc(db, "events", selectedEvent.id), {
+        status: "completed",
+        done: true,
+        doneLabel: "hecho",
+        color: "#9ca3af",
+        completedAt: serverTimestamp(),
+        completedByUid: user.uid,
+        completedByEmail: user.email ?? "",
+        updatedAt: serverTimestamp(),
+      });
+
+      if (safeText(selectedEvent.caseRef?.caseId)) {
+        await addAutoLog({
+          caseId: String(selectedEvent.caseRef?.caseId),
+          uid: user.uid,
+          email: user.email ?? "",
+          type: "informativa",
+          title: `Evento marcado como hecho: ${safeText(selectedEvent.title)}`,
+          body:
+            `Se marcó como hecho el evento "${safeText(selectedEvent.title)}".\n\n` +
+            `Fecha original: ${fmtDateTime(selectedEvent.startAt)}` +
+            `${selectedEvent.endAt ? ` → ${fmtDateTime(selectedEvent.endAt)}` : ""}`,
+        });
+      }
+
+      await reloadEvents(user.uid);
+      setSelectedEvent(null);
+      setReprogramModalOpen(false);
+      setMsg("✅ Evento marcado como hecho.");
+    } catch (e: any) {
+      setMsg(e?.message ?? "No se pudo marcar el evento como hecho.");
+    } finally {
+      setMarkDoneSaving(false);
     }
   }
 
@@ -1192,7 +1290,8 @@ export default function CalendarPage() {
                       const isActive = idx === quickEventSelectedIndex;
                       const reminder = isReminderEvent(item);
                       const rescheduled = isRescheduledEvent(item);
-                      const dotColor = rescheduled ? "#9ca3af" : item.color || "#3b82f6";
+                      const done = isDoneEvent(item);
+                      const dotColor = rescheduled || done ? "#9ca3af" : item.color || "#3b82f6";
 
                       return (
                         <button
@@ -1222,6 +1321,18 @@ export default function CalendarPage() {
                                 {reminder ? (
                                   <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
                                     Recordatorio
+                                  </span>
+                                ) : null}
+
+                                {isDeadlineEvent(item) ? (
+                                  <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-red-800 dark:bg-red-900/30 dark:text-red-100">
+                                    Vencimiento
+                                  </span>
+                                ) : null}
+
+                                {done ? (
+                                  <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                    Hecho
                                   </span>
                                 ) : null}
 
@@ -1356,22 +1467,22 @@ export default function CalendarPage() {
 
                     return (
                       <div
-  key={key}
-  role="button"
-  tabIndex={0}
-  onClick={() => openDayView(day)}
-  onKeyDown={(e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openDayView(day);
-    }
-  }}
-  className={`min-h-[130px] min-w-0 overflow-hidden rounded-2xl border p-2 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
-    isToday
-      ? "border-black dark:border-white"
-      : "border-gray-200 dark:border-gray-800"
-  } ${isCurrentMonth ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/50"}`}
->
+                        key={key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openDayView(day)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            openDayView(day);
+                          }
+                        }}
+                        className={`min-h-[130px] min-w-0 overflow-hidden rounded-2xl border p-2 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
+                          isToday
+                            ? "border-black dark:border-white"
+                            : "border-gray-200 dark:border-gray-800"
+                        } ${isCurrentMonth ? "bg-white dark:bg-gray-900" : "bg-gray-50 dark:bg-gray-800/50"}`}
+                      >
                         <div
                           className={`mb-2 text-sm font-black ${
                             isCurrentMonth
@@ -1408,23 +1519,23 @@ export default function CalendarPage() {
                   const isToday = isSameDay(day, new Date());
 
                   return (
-                   <div
-  key={key}
-  role="button"
-  tabIndex={0}
-  onClick={() => openDayView(day)}
-  onKeyDown={(e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openDayView(day);
-    }
-  }}
-  className={`min-w-0 overflow-hidden rounded-2xl border p-3 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
-    isToday
-      ? "border-black dark:border-white"
-      : "border-gray-200 dark:border-gray-800"
-  }`}
->
+                    <div
+                      key={key}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openDayView(day)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openDayView(day);
+                        }
+                      }}
+                      className={`min-w-0 overflow-hidden rounded-2xl border p-3 text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20 ${
+                        isToday
+                          ? "border-black dark:border-white"
+                          : "border-gray-200 dark:border-gray-800"
+                      }`}
+                    >
                       <div className="text-sm font-black text-gray-900 dark:text-gray-100">
                         {fmtDateLabel(day)}
                       </div>
@@ -1468,7 +1579,8 @@ export default function CalendarPage() {
                     dayEvents.map((row) => {
                       const rescheduled = isRescheduledEvent(row);
                       const reminder = isReminderEvent(row);
-                      const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+                      const done = isDoneEvent(row);
+                      const dotColor = rescheduled || done ? "#9ca3af" : row.color || "#3b82f6";
 
                       return (
                         <button
@@ -1492,6 +1604,18 @@ export default function CalendarPage() {
                                 {reminder ? (
                                   <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
                                     Recordatorio
+                                  </span>
+                                ) : null}
+
+                                {isDeadlineEvent(row) ? (
+                                  <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-black uppercase text-red-800 dark:bg-red-900/30 dark:text-red-100">
+                                    Vencimiento
+                                  </span>
+                                ) : null}
+
+                                {done ? (
+                                  <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                    Hecho
                                   </span>
                                 ) : null}
 
@@ -1550,7 +1674,8 @@ export default function CalendarPage() {
                   agendaRows.map((row) => {
                     const rescheduled = isRescheduledEvent(row);
                     const reminder = isReminderEvent(row);
-                    const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+                    const done = isDoneEvent(row);
+                    const dotColor = rescheduled || done ? "#9ca3af" : row.color || "#3b82f6";
 
                     return (
                       <button
@@ -1575,6 +1700,18 @@ export default function CalendarPage() {
                               {reminder ? (
                                 <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-teal-800 dark:bg-teal-900/30 dark:text-teal-100">
                                   Recordatorio
+                                </span>
+                              ) : null}
+
+                              {isDeadlineEvent(row) ? (
+                                <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-black uppercase text-red-800 dark:bg-red-900/30 dark:text-red-100">
+                                  Vencimiento
+                                </span>
+                              ) : null}
+
+                              {done ? (
+                                <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
+                                  Hecho
                                 </span>
                               ) : null}
 
@@ -1626,9 +1763,8 @@ export default function CalendarPage() {
                 </div>
               ) : (
                 upcomingRowsLimited.map((row) => {
-                  const rescheduled = isRescheduledEvent(row);
                   const reminder = isReminderEvent(row);
-                  const dotColor = rescheduled ? "#9ca3af" : row.color || "#3b82f6";
+                  const dotColor = row.color || "#3b82f6";
 
                   return (
                     <button
@@ -1656,9 +1792,9 @@ export default function CalendarPage() {
                               </span>
                             ) : null}
 
-                            {rescheduled ? (
-                              <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-black uppercase text-gray-700 dark:bg-gray-700 dark:text-gray-100">
-                                Reprogramado
+                            {isDeadlineEvent(row) ? (
+                              <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-black uppercase text-red-800 dark:bg-red-900/30 dark:text-red-100">
+                                Vencimiento
                               </span>
                             ) : null}
                           </div>
@@ -1712,6 +1848,12 @@ export default function CalendarPage() {
               </div>
             ) : null}
 
+            {isDeadlineEvent(selectedEvent) ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-100">
+                Este evento es un vencimiento.
+              </div>
+            ) : null}
+
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
                 <div className="text-xs font-extrabold text-gray-500 dark:text-gray-400">Inicio</div>
@@ -1752,6 +1894,12 @@ export default function CalendarPage() {
                 </div>
               </div>
             </div>
+
+            {isDoneEvent(selectedEvent) ? (
+              <div className="rounded-xl border border-gray-300 bg-gray-100 p-3 text-sm font-bold text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
+                Este evento fue marcado como hecho.
+              </div>
+            ) : null}
 
             {isRescheduledEvent(selectedEvent) ? (
               <div className="rounded-xl border border-gray-300 bg-gray-100 p-3 text-sm font-bold text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100">
@@ -1818,7 +1966,23 @@ export default function CalendarPage() {
               </div>
             </div>
 
-            {!isRescheduledEvent(selectedEvent) ? (
+            {!isDoneEvent(selectedEvent) &&
+            !isRescheduledEvent(selectedEvent) &&
+            isCompletableEvent(selectedEvent) ? (
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800">
+                <label className="inline-flex items-center gap-3 text-sm font-extrabold text-gray-900 dark:text-gray-100">
+                  <input
+                    type="checkbox"
+                    checked={false}
+                    onChange={markEventAsDone}
+                    disabled={markDoneSaving}
+                  />
+                  <span>{markDoneSaving ? "Marcando..." : "Hecho"}</span>
+                </label>
+              </div>
+            ) : null}
+
+            {!isRescheduledEvent(selectedEvent) && !isDoneEvent(selectedEvent) ? (
               <div className="border-t border-gray-200 pt-4 dark:border-gray-800">
                 <button
                   type="button"
@@ -1877,7 +2041,8 @@ export default function CalendarPage() {
           </div>
         ) : null}
       </Modal>
-       <ScrollToTopButton />
+
+      <ScrollToTopButton />
     </AppShell>
   );
 }

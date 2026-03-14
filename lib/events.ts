@@ -73,10 +73,17 @@ export type CalendarEventDoc = {
     lastError?: string;
   };
 
-  createdAt?: any;
+    createdAt?: any;
   createdByUid?: string;
   createdByEmail?: string;
   updatedAt?: any;
+
+  done?: boolean;
+  doneLabel?: string;
+  completedAt?: any;
+  completedByUid?: string;
+  completedByEmail?: string;
+
   rescheduled?: boolean;
   rescheduledLabel?: string;
   reprogrammedAt?: any;

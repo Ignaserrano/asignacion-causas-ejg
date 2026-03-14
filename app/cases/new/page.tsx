@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
   collectionGroup,
@@ -27,11 +27,12 @@ type UserRow = { uid: string; email: string; role: string };
 
 export default function NewCasePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
-  // auth/shell data
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
+  const [pendingConsultationDerivations, setPendingConsultationDerivations] = useState<number>(0);
 
   const [authReady, setAuthReady] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
@@ -39,7 +40,6 @@ export default function NewCasePage() {
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
   const [practicingUsers, setPracticingUsers] = useState<UserRow[]>([]);
 
-  // Form
   const [caratulaTentativa, setCaratulaTentativa] = useState("");
   const [specialtyId, setSpecialtyId] = useState("");
   const [objeto, setObjeto] = useState("");
@@ -55,11 +55,11 @@ export default function NewCasePage() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // mínimo requerido, no máximo
+  const [prefillApplied, setPrefillApplied] = useState(false);
+
   const requiredDirectCount = broughtByParticipates ? 1 : 2;
   const directAssigneesSet = useMemo(() => new Set(directAssignees), [directAssignees]);
 
-  // Auth guard + shell data
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -92,6 +92,18 @@ export default function NewCasePage() {
       }
 
       try {
+        const qPendingConsultations = query(
+          collectionGroup(db, "consultations"),
+          where("derivation.toUid", "==", u.uid),
+          where("derivation.status", "==", "pending")
+        );
+        const consultationSnap = await getDocs(qPendingConsultations);
+        setPendingConsultationDerivations(consultationSnap.size);
+      } catch {
+        setPendingConsultationDerivations(0);
+      }
+
+      try {
         const profile = await getUserProfile(u.uid);
         if (!profile) {
           router.replace("/dashboard");
@@ -106,18 +118,38 @@ export default function NewCasePage() {
     return () => unsub();
   }, [router]);
 
-  // Load data
   useEffect(() => {
     if (!authReady) return;
 
     (async () => {
       const [sp, pu] = await Promise.all([listActiveSpecialties(), listPracticingUsers()]);
-      setSpecialties(sp as any);
-      setPracticingUsers(pu as any);
-      if (sp.length && !specialtyId) setSpecialtyId((sp as any)[0].id);
+      setSpecialties(sp as Specialty[]);
+      setPracticingUsers(pu as UserRow[]);
+      if (sp.length && !specialtyId) setSpecialtyId((sp as Specialty[])[0].id);
     })().catch((e: any) => setMsg("Error cargando datos: " + (e?.message ?? "desconocido")));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady]);
+  }, [authReady, specialtyId]);
+
+  useEffect(() => {
+    if (prefillApplied) return;
+
+    const prefillCaratula = searchParams.get("prefillCaratula") ?? "";
+    const prefillObjeto = searchParams.get("prefillObjeto") ?? "";
+    const prefillResumen = searchParams.get("prefillResumen") ?? "";
+
+    if (prefillCaratula) {
+      setCaratulaTentativa((prev) => prev || prefillCaratula);
+    }
+
+    if (prefillObjeto) {
+      setObjeto((prev) => prev || prefillObjeto);
+    }
+
+    if (prefillResumen) {
+      setResumen((prev) => prev || prefillResumen);
+    }
+
+    setPrefillApplied(true);
+  }, [searchParams, prefillApplied]);
 
   function toggleDirectAssignee(targetUid: string) {
     setMsg(null);
@@ -190,6 +222,7 @@ export default function NewCasePage() {
         userEmail={user?.email ?? null}
         role={role}
         pendingInvites={pendingInvites}
+        pendingConsultationDerivations={pendingConsultationDerivations}
         onLogout={doLogout}
       >
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
@@ -214,6 +247,7 @@ export default function NewCasePage() {
       userEmail={user?.email ?? null}
       role={role}
       pendingInvites={pendingInvites}
+      pendingConsultationDerivations={pendingConsultationDerivations}
       onLogout={doLogout}
       breadcrumbs={[
         { label: "Inicio", href: "/dashboard" },
@@ -221,7 +255,6 @@ export default function NewCasePage() {
       ]}
     >
       <div className="mb-4">
-        
         <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">
           Completá los datos para crear la causa y, si corresponde, invitar/asignar abogados.
         </div>
@@ -257,7 +290,9 @@ export default function NewCasePage() {
         </label>
 
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Objeto</span>
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+            Objeto
+          </span>
           <textarea
             value={objeto}
             onChange={(e) => setObjeto(e.target.value)}
@@ -266,7 +301,9 @@ export default function NewCasePage() {
         </label>
 
         <label className="grid gap-2">
-          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">Resumen</span>
+          <span className="text-sm font-extrabold text-gray-900 dark:text-gray-100">
+            Resumen
+          </span>
           <textarea
             value={resumen}
             onChange={(e) => setResumen(e.target.value)}

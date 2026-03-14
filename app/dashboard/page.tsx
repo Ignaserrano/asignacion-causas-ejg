@@ -98,6 +98,16 @@ type TransferPendingItem = {
   isOwner: boolean;
 };
 
+type ReceivedTransferNoticeItem = {
+  noticeId: string;
+  chargeId: string;
+  fromEmail: string;
+  amount?: number;
+  currency?: string;
+  caseLabel: string;
+  confirmedAtSec?: number;
+};
+
 type OverdueChargeItem = {
   chargeId: string;
   payerName: string;
@@ -221,6 +231,32 @@ function getCaseManagementStatus(c: CaseRow): ProceduralStatus {
   return (c.managementStatus ?? "preliminar") as ProceduralStatus;
 }
 
+function getSeenTransferNoticesStorageKey(uid: string) {
+  return `dashboard_seen_transfer_notices_${uid}`;
+}
+
+function readSeenTransferNotices(uid: string): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(getSeenTransferNoticesStorageKey(uid));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSeenTransferNotices(uid: string, ids: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      getSeenTransferNoticesStorageKey(uid),
+      JSON.stringify(Array.from(new Set(ids)))
+    );
+  } catch {}
+}
+
 function Modal({
   open,
   title,
@@ -261,6 +297,8 @@ export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string>("lawyer");
   const [pendingInvites, setPendingInvites] = useState<number>(0);
+  const [pendingConsultationDerivations, setPendingConsultationDerivations] =
+    useState<number>(0);
 
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -274,6 +312,10 @@ export default function DashboardPage() {
 
   const [pendingTransfers, setPendingTransfers] = useState<TransferPendingItem[]>([]);
   const [loadingTransfers, setLoadingTransfers] = useState(false);
+
+  const [receivedTransferNotices, setReceivedTransferNotices] = useState<
+    ReceivedTransferNoticeItem[]
+  >([]);
 
   const [overdueCharges, setOverdueCharges] = useState<OverdueChargeItem[]>([]);
   const [loadingOverdueCharges, setLoadingOverdueCharges] = useState(false);
@@ -290,6 +332,8 @@ export default function DashboardPage() {
   const [quickSearchSelectedIndex, setQuickSearchSelectedIndex] = useState(0);
 
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [usersLoaded, setUsersLoaded] = useState(false);
+
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventRow | null>(null);
 
   useEffect(() => {
@@ -305,8 +349,8 @@ export default function DashboardPage() {
 
       try {
         const userSnap = await getDoc(doc(db, "users", u.uid));
-        const data = userSnap.exists() ? (userSnap.data() as any) : {};
-        setRole(String(data?.role ?? "lawyer"));
+        const userData = userSnap.exists() ? (userSnap.data() as any) : {};
+        setRole(String(userData?.role ?? "lawyer"));
 
         const qInv = query(
           collectionGroup(db, "invites"),
@@ -315,6 +359,14 @@ export default function DashboardPage() {
         );
         const invSnap = await getDocs(qInv);
         setPendingInvites(invSnap.size);
+
+        const qConsultations = query(
+          collection(db, "consultations"),
+          where("derivation.toUid", "==", u.uid),
+          where("derivation.status", "==", "pending")
+        );
+        const consultationSnap = await getDocs(qConsultations);
+        setPendingConsultationDerivations(consultationSnap.size);
       } catch (e: any) {
         setMsg(e?.message ?? "Error cargando dashboard");
       } finally {
@@ -329,8 +381,11 @@ export default function DashboardPage() {
     (async () => {
       if (!user) {
         setUsers([]);
+        setUsersLoaded(false);
         return;
       }
+
+      setUsersLoaded(false);
 
       try {
         const qUsers = query(collection(db, "users"), orderBy("email", "asc"));
@@ -349,6 +404,8 @@ export default function DashboardPage() {
         setUsers(rows);
       } catch {
         setUsers([]);
+      } finally {
+        setUsersLoaded(true);
       }
     })();
   }, [user]);
@@ -545,6 +602,111 @@ export default function DashboardPage() {
       }
     })();
   }, [user]);
+
+  useEffect(() => {
+    (async () => {
+      if (!user) {
+        setReceivedTransferNotices([]);
+        return;
+      }
+
+      if (!usersLoaded) {
+        return;
+      }
+
+      try {
+        const qDoneTransfers = query(
+          collection(db, "charges"),
+          where("visibleToUids", "array-contains", user.uid),
+          where("status", "==", "paid"),
+          limit(100)
+        );
+
+        const snap = await getDocs(qDoneTransfers);
+
+        const seenIds = readSeenTransferNotices(user.uid);
+        const seenSet = new Set(seenIds);
+
+        const ownerEmailCache = new Map<string, string>();
+        const usersMap = new Map(users.map((u) => [u.uid, u.email]));
+
+        async function resolveOwnerEmail(ownerUid: string, fallbackData: any) {
+          const directOwnerEmail = safeText(fallbackData?.ownerEmail);
+          if (directOwnerEmail) return directOwnerEmail;
+
+          const fromUsersState = safeText(usersMap.get(ownerUid));
+          if (fromUsersState) return fromUsersState;
+
+          if (ownerEmailCache.has(ownerUid)) {
+            return ownerEmailCache.get(ownerUid) || "";
+          }
+
+          try {
+            const ownerSnap = await getDoc(doc(db, "users", ownerUid));
+            const resolved = ownerSnap.exists()
+              ? safeText((ownerSnap.data() as any)?.email)
+              : "";
+            ownerEmailCache.set(ownerUid, resolved);
+            return resolved;
+          } catch {
+            ownerEmailCache.set(ownerUid, "");
+            return "";
+          }
+        }
+
+        const mapped = await Promise.all(
+          snap.docs.map(async (d) => {
+            const data = d.data() as any;
+
+            const transferStatus = String(data?.transferTicket?.status ?? "");
+            if (transferStatus !== "done") return null;
+
+            const confirmedAtSec =
+              Number(data?.transferTicket?.confirmedAt?.seconds ?? 0) || 0;
+            if (!confirmedAtSec) return null;
+
+            const ownerUid = safeText(data?.ownerUid);
+            if (!ownerUid || ownerUid === user.uid) return null;
+
+            const myNetAmount = getChargeUserNetAmount(data, user.uid);
+            if (Number(myNetAmount ?? 0) <= 0) return null;
+
+            const noticeId = `${d.id}_${confirmedAtSec}_${user.uid}`;
+            if (seenSet.has(noticeId)) return null;
+
+            const resolvedOwnerEmail = await resolveOwnerEmail(ownerUid, data);
+
+            return {
+              noticeId,
+              chargeId: d.id,
+              fromEmail:
+                resolvedOwnerEmail ||
+                safeText(data?.transferTicket?.confirmedByEmail) ||
+                "(sin email)",
+              amount: myNetAmount,
+              currency: safeText(data?.currency) || undefined,
+              caseLabel: data?.caseRef?.isExtraCase
+                ? safeText(data?.caseRef?.extraCaseReason) || "Cobro extra-caso"
+                : safeText(data?.caseRef?.caratula) || "(sin carátula)",
+              confirmedAtSec,
+            } as ReceivedTransferNoticeItem;
+          })
+        );
+
+        const items = mapped.filter(Boolean) as ReceivedTransferNoticeItem[];
+
+        items.sort((a, b) => (b.confirmedAtSec ?? 0) - (a.confirmedAtSec ?? 0));
+
+        setReceivedTransferNotices(items);
+
+        if (items.length > 0) {
+          writeSeenTransferNotices(user.uid, [...seenIds, ...items.map((x) => x.noticeId)]);
+        }
+      } catch {
+        setReceivedTransferNotices([]);
+      }
+    })();
+  }, [user, users, usersLoaded]);
 
   useEffect(() => {
     (async () => {
@@ -848,6 +1010,7 @@ export default function DashboardPage() {
       userEmail={user?.email ?? null}
       role={role}
       pendingInvites={pendingInvites}
+      pendingConsultationDerivations={pendingConsultationDerivations}
       onLogout={doLogout}
     >
       {msg ? (
@@ -859,6 +1022,27 @@ export default function DashboardPage() {
       {loading ? (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
           Cargando...
+        </div>
+      ) : null}
+
+      {receivedTransferNotices.length > 0 ? (
+        <div className="mb-4 rounded-2xl border border-green-200 bg-green-50 p-4 shadow-sm dark:border-green-800 dark:bg-green-900/20">
+          <div className="text-sm font-black text-green-900 dark:text-green-100">
+            Transferencias recibidas
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {receivedTransferNotices.map((item) => (
+              <div
+                key={item.noticeId}
+                className="rounded-xl border border-green-200 bg-white/70 px-3 py-3 text-sm text-green-950 dark:border-green-700 dark:bg-green-950/20 dark:text-green-100"
+              >
+                <span className="font-black">{item.fromEmail}</span> te transfirió{" "}
+                <span className="font-black">{fmtMoney(item.amount, item.currency)}</span> por
+                causa <span className="font-black">"{item.caseLabel}"</span>.
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -1027,6 +1211,31 @@ export default function DashboardPage() {
 
             <div className="shrink-0 rounded-full border border-orange-300 bg-white px-3 py-1 text-sm font-black text-orange-900 dark:border-orange-700 dark:bg-orange-950/40 dark:text-orange-100">
               {pendingInvites}
+            </div>
+          </div>
+        </a>
+      ) : null}
+
+      {pendingConsultationDerivations > 0 ? (
+        <a
+          href="/consultas"
+          className="mb-4 block rounded-xl border border-sky-200 bg-sky-50 p-4 shadow-sm transition hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/20 dark:hover:bg-sky-900/30"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-black text-sky-900 dark:text-sky-100">
+                Consultas pendientes de aceptación
+              </div>
+              <div className="mt-1 text-xs text-sky-800 dark:text-sky-200">
+                Tenés {pendingConsultationDerivations} consulta
+                {pendingConsultationDerivations === 1 ? "" : "s"} derivada
+                {pendingConsultationDerivations === 1 ? "" : "s"} pendiente
+                {pendingConsultationDerivations === 1 ? "" : "s"} de respuesta.
+              </div>
+            </div>
+
+            <div className="shrink-0 rounded-full border border-sky-300 bg-white px-3 py-1 text-sm font-black text-sky-900 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-100">
+              {pendingConsultationDerivations}
             </div>
           </div>
         </a>
@@ -1229,8 +1438,8 @@ export default function DashboardPage() {
                   {item.payerName} · {item.paidAtSec ? fmtDateTime(item.paidAtSec) : "-"}
                 </div>
                 <div className="mt-1 text-xs font-bold text-gray-700 dark:text-gray-200">
-                  {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} ·
-                  {" "}Mi neto: {fmtMoney(item.myNetAmount, item.currency)}
+                  {item.isOwner ? "Debés realizar transferencias" : "Pendiente de recibir"} ·{" "}
+                  Mi neto: {fmtMoney(item.myNetAmount, item.currency)}
                 </div>
               </a>
             ))}
