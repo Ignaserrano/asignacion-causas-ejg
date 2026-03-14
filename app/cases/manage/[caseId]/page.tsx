@@ -400,6 +400,48 @@ function getAllOrganismsFromMeta(meta?: any) {
   );
 }
 
+type RadicationOption = {
+  key: string;
+  value: string;
+  sourceLabel: string;
+};
+
+function buildRadicationOptions(source?: any): RadicationOption[] {
+  const options: RadicationOption[] = [];
+
+  const court = String(source?.court ?? "").trim();
+  const tribunalAlzada = String(source?.tribunalAlzada ?? "").trim();
+  const others = getAllOrganismsFromMeta(source);
+
+  if (court) {
+    options.push({
+      key: "court",
+      value: court,
+      sourceLabel: "Juzgado",
+    });
+  }
+
+  if (tribunalAlzada) {
+    options.push({
+      key: "tribunalAlzada",
+      value: tribunalAlzada,
+      sourceLabel: "Tribunal de Alzada",
+    });
+  }
+
+  others.forEach((org, idx) => {
+    if (!String(org ?? "").trim()) return;
+    options.push({
+      key: `otherOrganisms.${idx}`,
+      value: String(org).trim(),
+      sourceLabel: `Otro organismo interviniente ${idx + 1}`,
+    });
+  });
+
+  return options;
+}
+
+
 function getContactFullName(c?: ContactDoc | null) {
   if (!c) return "";
   return (
@@ -829,6 +871,55 @@ const [otherProofBodyDraft, setOtherProofBodyDraft] = useState("");
   return getAllOrganismsFromMeta(meta);
 }, [meta]);
 
+const radicationOptions = useMemo(() => {
+  return buildRadicationOptions(meta);
+}, [meta]);
+
+const currentRadicationKey = String((meta as any)?.currentRadicationKey ?? "").trim();
+
+const currentRadicationOption = useMemo(() => {
+  return radicationOptions.find((x) => x.key === currentRadicationKey) ?? null;
+}, [radicationOptions, currentRadicationKey]);
+
+async function setCurrentRadication(nextKey: string) {
+  if (!user) return;
+  if (!canWrite) {
+    alert("No tenés permisos de escritura en esta causa.");
+    return;
+  }
+
+  const next = radicationOptions.find((x) => x.key === nextKey);
+  if (!next) return;
+
+  const prev = radicationOptions.find((x) => x.key === currentRadicationKey) ?? null;
+
+  if (prev?.key === next.key) return;
+
+  await updateDoc(managementMetaRef(caseId), {
+    currentRadicationKey: next.key,
+    updatedAt: serverTimestamp(),
+  });
+
+  setMeta((prevMeta) =>
+    prevMeta
+      ? ({
+          ...prevMeta,
+          currentRadicationKey: next.key,
+        } as any)
+      : prevMeta
+  );
+
+  await addAutoLog({
+    caseId,
+    uid: user.uid,
+    email: user.email ?? "",
+    title: `Pase registrado de ${prev?.value ?? "(sin radicación anterior)"} a ${next.value}`,
+    body: "",
+    type: "informativa",
+  });
+}
+
+
 useEffect(() => {
   if (!caseDoc) return;
 
@@ -1203,57 +1294,74 @@ otherOrganisms:
   }
 
   async function saveMetaFromModal() {
-    const from = meta?.status ?? "preliminar";
-    const to = (metaDraft.status as CaseStatus) ?? from;
-    const nextJurisdiccion =
-      (metaDraft.jurisdiccion as any) ?? caseDoc?.jurisdiccion ?? "provincia_bs_as";
+  const from = meta?.status ?? "preliminar";
+  const to = (metaDraft.status as CaseStatus) ?? from;
+  const nextJurisdiccion =
+    (metaDraft.jurisdiccion as any) ?? caseDoc?.jurisdiccion ?? "provincia_bs_as";
 
-    let nextFuero = String(metaDraft.fuero ?? "");
-    let nextCourt = String(metaDraft.court ?? "");
+  let nextFuero = String(metaDraft.fuero ?? "");
+  let nextCourt = String(metaDraft.court ?? "");
 
-    const availableFueros = getFueroOptions(nextJurisdiccion);
-    if (availableFueros.length > 0 && nextFuero && !availableFueros.includes(nextFuero)) {
-      nextFuero = "";
-      nextCourt = "";
-    }
-
-    const availableCourts = getCourtOptions(nextJurisdiccion, nextFuero);
-    if (availableCourts.length > 0 && nextCourt && !availableCourts.includes(nextCourt)) {
-      nextCourt = "";
-    }
-
-    const normalizedOtherOrganisms = normalizeOrganisms(
-      (metaDraft.otherOrganisms ?? []).map((x) => String(x ?? ""))
-    );
-
-    await saveMeta(
-      {
-        physicalFolder: String(metaDraft.physicalFolder ?? ""),
-        driveFolderUrl: String(metaDraft.driveFolderUrl ?? ""),
-        expedienteNumber: String(metaDraft.expedienteNumber ?? ""),
-        court: nextCourt,
-        fuero: nextFuero,
-        jurisdiccion: nextJurisdiccion,
-        deptoJudicial:
-          nextJurisdiccion === "provincia_bs_as" ? String(metaDraft.deptoJudicial ?? "") : "",
-        status: to,
-        tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
-otherOrganism: normalizedOtherOrganisms[0] ?? "",
-otherOrganisms: normalizedOtherOrganisms,
-        claimAmount:
-          metaDraft.claimAmount == null
-            ? null
-            : Number(metaDraft.claimAmount),
-        claimAmountDate: String(metaDraft.claimAmountDate ?? ""),
-      } as any,
-      { from, to },
-     {
-  caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
-  jurisdiccion: nextJurisdiccion,
-  managementStatus: to,
-}
-    );
+  const availableFueros = getFueroOptions(nextJurisdiccion);
+  if (availableFueros.length > 0 && nextFuero && !availableFueros.includes(nextFuero)) {
+    nextFuero = "";
+    nextCourt = "";
   }
+
+  const availableCourts = getCourtOptions(nextJurisdiccion, nextFuero);
+  if (availableCourts.length > 0 && nextCourt && !availableCourts.includes(nextCourt)) {
+    nextCourt = "";
+  }
+
+  const normalizedOtherOrganisms = normalizeOrganisms(
+    (metaDraft.otherOrganisms ?? []).map((x) => String(x ?? ""))
+  );
+
+  const nextRadicationOptions = buildRadicationOptions({
+    ...(meta ?? {}),
+    court: nextCourt,
+    tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
+    otherOrganism: normalizedOtherOrganisms[0] ?? "",
+    otherOrganisms: normalizedOtherOrganisms,
+  });
+
+  const prevCurrentRadicationKey = String((meta as any)?.currentRadicationKey ?? "").trim();
+  const nextCurrentRadicationKey = nextRadicationOptions.some(
+    (x) => x.key === prevCurrentRadicationKey
+  )
+    ? prevCurrentRadicationKey
+    : "";
+
+  await saveMeta(
+    {
+      physicalFolder: String(metaDraft.physicalFolder ?? ""),
+      driveFolderUrl: String(metaDraft.driveFolderUrl ?? ""),
+      expedienteNumber: String(metaDraft.expedienteNumber ?? ""),
+      court: nextCourt,
+      fuero: nextFuero,
+      jurisdiccion: nextJurisdiccion,
+      deptoJudicial:
+        nextJurisdiccion === "provincia_bs_as" ? String(metaDraft.deptoJudicial ?? "") : "",
+      status: to,
+      tribunalAlzada: String(metaDraft.tribunalAlzada ?? ""),
+      otherOrganism: normalizedOtherOrganisms[0] ?? "",
+      otherOrganisms: normalizedOtherOrganisms,
+      currentRadicationKey: nextCurrentRadicationKey,
+      claimAmount:
+        metaDraft.claimAmount == null
+          ? null
+          : Number(metaDraft.claimAmount),
+      claimAmountDate: String(metaDraft.claimAmountDate ?? ""),
+    } as any,
+    { from, to },
+    {
+      caratulaTentativa: String(metaDraft.caratulaTentativa ?? ""),
+      jurisdiccion: nextJurisdiccion,
+      managementStatus: to,
+    }
+  );
+}
+
 
   async function addParty() {
     if (!user) return;
@@ -2492,9 +2600,24 @@ const proofControlItems = Array.isArray((meta as any)?.proofControl)
                   <span className="font-black">Nº expediente:</span>{" "}
                   <span>{valueOrDash(meta?.expedienteNumber)}</span>
                 </div>
-                <div>
-                  <span className="font-black">Juzgado:</span> <span>{valueOrDash(meta?.court)}</span>
-                </div>
+               <div className="flex flex-wrap items-center gap-2">
+  <span className="font-black">Juzgado:</span>
+  <span>{valueOrDash(meta?.court)}</span>
+
+  {safeText(meta?.court) ? (
+    <label className="ml-2 inline-flex items-center gap-2 text-xs font-extrabold text-gray-700 dark:text-gray-200">
+      <input
+        type="checkbox"
+        checked={currentRadicationKey === "court"}
+        onChange={() => setCurrentRadication("court")}
+        disabled={!canWrite}
+        className="h-4 w-4"
+      />
+      Radicación actual
+    </label>
+  ) : null}
+</div>
+
                 <div>
                   <span className="font-black">Fuero:</span> <span>{valueOrDash(meta?.fuero)}</span>
                 </div>
@@ -2506,14 +2629,61 @@ const proofControlItems = Array.isArray((meta as any)?.proofControl)
                   <span className="font-black">Departamento judicial:</span>{" "}
                   <span>{valueOrDash(meta?.deptoJudicial)}</span>
                 </div>
-                <div>
-                  <span className="font-black">Tribunal de Alzada:</span>{" "}
-                  <span>{valueOrDash((meta as any)?.tribunalAlzada)}</span>
-                </div>
-                <div>
-  <span className="font-black">Otros organismos intervinientes:</span>{" "}
-  <span>{availableOrganisms.length > 0 ? availableOrganisms.join(", ") : "-"}</span>
+                <div className="flex flex-wrap items-center gap-2">
+  <span className="font-black">Tribunal de Alzada:</span>
+  <span>{valueOrDash((meta as any)?.tribunalAlzada)}</span>
+
+  {safeText((meta as any)?.tribunalAlzada) ? (
+    <label className="ml-2 inline-flex items-center gap-2 text-xs font-extrabold text-gray-700 dark:text-gray-200">
+      <input
+        type="checkbox"
+        checked={currentRadicationKey === "tribunalAlzada"}
+        onChange={() => setCurrentRadication("tribunalAlzada")}
+        disabled={!canWrite}
+        className="h-4 w-4"
+      />
+      Radicación actual
+    </label>
+  ) : null}
 </div>
+
+               <div className="grid gap-2">
+  <div>
+    <span className="font-black">Otros organismos intervinientes:</span>
+  </div>
+
+  {availableOrganisms.length === 0 ? (
+    <div>-</div>
+  ) : (
+    availableOrganisms.map((org, idx) => {
+      const key = `otherOrganisms.${idx}`;
+      const text = String(org ?? "").trim();
+
+      if (!text) return null;
+
+      return (
+        <div
+          key={key}
+          className="flex flex-wrap items-center gap-2 pl-4"
+        >
+          <span>{text}</span>
+
+          <label className="inline-flex items-center gap-2 text-xs font-extrabold text-gray-700 dark:text-gray-200">
+            <input
+              type="checkbox"
+              checked={currentRadicationKey === key}
+              onChange={() => setCurrentRadication(key)}
+              disabled={!canWrite}
+              className="h-4 w-4"
+            />
+            Radicación actual
+          </label>
+        </div>
+      );
+    })
+  )}
+</div>
+
                 <div>
                   <span className="font-black">Monto del juicio:</span>{" "}
                   <span>${fmtAmount((meta as any)?.claimAmount)}</span>
